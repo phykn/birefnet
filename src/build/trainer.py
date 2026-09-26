@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from ..adapt.wrap import LoRABiRefNet
+from ..model import BiRefNet
 from ..prepare.spec import PreprocessSpec
 from ..predict.inference import predict_logits
 from ..train.objective import TrainLoss
@@ -27,14 +27,12 @@ def create_run_dir(root: str | os.PathLike[str] = "run") -> str:
 
 def build(
     cfg: Any,
-    model: LoRABiRefNet,
+    model: BiRefNet,
     train_loader: DataLoader,
     valid_loader: DataLoader,
-    calib_loader: DataLoader,
     save_dir: str | os.PathLike[str] | None = None,
 ) -> Trainer:
     criterion = TrainLoss(
-        gce_q=cfg.loss.gce_q,
         lambda_cls=cfg.loss.lambda_cls,
         lambda_region=cfg.loss.lambda_region,
         lambda_boundary=cfg.loss.lambda_boundary,
@@ -44,42 +42,24 @@ def build(
         teacher_confidence=cfg.teacher.confidence,
         min_gt_weight=cfg.teacher.min_gt_weight,
         lambda_teacher=cfg.teacher.loss_weight,
+        num_classes=cfg.birefnet.num_classes,
+        ignore_index=cfg.data.get("ignore_index", 255),
     )
 
-    lora_params = []
-    head_params = []
+    backbone = []
+    decoder = []
     for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if ".down." in name or ".up." in name:
-            lora_params.append(param)
-        else:
-            head_params.append(param)
-
+        if param.requires_grad:
+            (backbone if name.startswith("bb.") else decoder).append(param)
     param_groups = []
-    if lora_params:
-        param_groups.append(
-            {
-                "name": "lora",
-                "params": lora_params,
-                "lr": float(cfg.train.max_lr),
-                "max_lr": float(cfg.train.max_lr),
-                "min_lr": float(cfg.train.min_lr),
-                "weight_decay": float(cfg.train.get("weight_decay", 0.01)),
-            }
-        )
-    if head_params:
-        scale = float(cfg.train.get("head_lr_scale", 0.5))
-        param_groups.append(
-            {
-                "name": "heads",
-                "params": head_params,
-                "lr": float(cfg.train.max_lr) * scale,
-                "max_lr": float(cfg.train.max_lr) * scale,
-                "min_lr": float(cfg.train.min_lr) * scale,
-                "weight_decay": float(cfg.train.get("head_weight_decay", 0.01)),
-            }
-        )
+    for name, params, scale in [("decoder", decoder, 1.0),
+                                ("backbone", backbone, float(cfg.train.backbone_lr_scale))]:
+        if params:
+            param_groups.append(dict(name=name, params=params,
+                                     lr=float(cfg.train.max_lr) * scale,
+                                     max_lr=float(cfg.train.max_lr) * scale,
+                                     min_lr=float(cfg.train.min_lr) * scale,
+                                     weight_decay=float(cfg.train.weight_decay)))
     if not param_groups:
         raise RuntimeError("No trainable parameters were selected")
 
@@ -96,17 +76,12 @@ def build(
     else:
         target = os.fspath(save_dir)
         os.makedirs(target, exist_ok=True)
-    teacher = Teacher(
-        model,
-        decay=cfg.teacher.decay,
-        start=cfg.teacher.start,
-        ramp=cfg.teacher.ramp,
-    )
+    teacher = (Teacher(model, decay=cfg.teacher.decay, start=cfg.teacher.start,
+                       ramp=cfg.teacher.ramp) if cfg.teacher.enabled else None)
     return Trainer(
         model=model,
         train_loader=train_loader,
         valid_loader=valid_loader,
-        calib_loader=calib_loader,
         criterion=criterion,
         optimizer=optimizer,
         scheduler=scheduler,
@@ -115,6 +90,7 @@ def build(
         predictor=predict_logits,
         max_grad_norm=cfg.train.max_grad_norm,
         accum_steps=cfg.train.accum_steps,
+        ignore_index=cfg.data.get("ignore_index", 255),
         preprocess=PreprocessSpec(
             size=int(cfg.data.size),
             mode=cfg.data.get("mode", "rgb"),

@@ -1,4 +1,7 @@
 import base64
+from io import BytesIO
+from PIL import Image
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -6,9 +9,9 @@ import pytest
 import torch
 
 from src.prepare.spec import PreprocessSpec
-from src.serve.codec import ImageLimitError, decode
+from backend.codec import ImageLimitError, decode
 
-PREDICT_TARGET = "src.serve.route.predict_mask"
+PREDICT_TARGET = "backend.route.predict_mask"
 
 
 def _encode(image: np.ndarray) -> str:
@@ -19,102 +22,47 @@ def _encode(image: np.ndarray) -> str:
 
 
 def _decode(value: str) -> np.ndarray:
-    encoded = base64.b64decode(value)
-    return cv2.imdecode(np.frombuffer(encoded, np.uint8), cv2.IMREAD_UNCHANGED)
+    with Image.open(BytesIO(base64.b64decode(value))) as image:
+        return np.asarray(image).copy()
 
 
-def test_defaults_to_binary_and_uses_saved_threshold(monkeypatch, api_client):
+def test_defaults_to_class_labels(monkeypatch, api_client):
     captured = {}
-
     def fake_predict(model, image, **kwargs):
         captured.update(kwargs)
-        return np.full(image.shape[:2], 255, dtype=np.uint8)
-
+        labels = np.tile(np.arange(4, dtype=np.uint8), (16, 6))
+        return labels
     monkeypatch.setattr(PREDICT_TARGET, fake_predict)
-    client = api_client(object(), torch.device("cpu"), threshold=0.62)
-    image = np.zeros((16, 24, 3), dtype=np.uint8)
-    response = client.post(
-        "/predict",
-        json={"id": "sample", "base64_str": _encode(image)},
-    )
-
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
+    response = client.post("/predict", json={"id": "sample", "base64_str": _encode(np.zeros((16, 24, 3), np.uint8)), "tiles": [1, 3]})
     assert response.status_code == 200
     payload = response.json()
     assert payload["id"] == "sample"
-    assert payload["output_mode"] == "binary"
-    assert payload["threshold_applied"] == 0.62
+    assert payload["output_mode"] == "labels"
+    assert payload["num_classes"] == 4
+    assert payload["value_range"] == [0, 3]
+    assert payload["class_id"] is None
     assert payload["dtype"] == "uint8"
-    assert payload["value_range"] == [0, 255]
-    assert _decode(payload["base64_str"]).shape == (16, 24)
-    assert captured["output_mode"] == "binary"
-    assert captured["threshold"] == 0.62
-    assert captured["tiles"] == (1,)
-    assert captured["overlap"] == pytest.approx(1 / 3)
+    with Image.open(BytesIO(base64.b64decode(payload["base64_str"]))) as png:
+        assert png.mode == "P"
+        assert set(np.unique(np.asarray(png))) == {0, 1, 2, 3}
+    np.testing.assert_array_equal(_decode(payload["base64_str"]), np.tile(np.arange(4, dtype=np.uint8), (16, 6)))
+    assert captured["tiles"] == (1, 3)
     assert captured["size"] == 1024
     assert captured["mode"] == "rgb"
 
 
-def test_request_threshold_overrides_saved_value(monkeypatch, api_client):
-    captured = {}
-
-    def fake_predict(model, image, **kwargs):
-        captured.update(kwargs)
-        return np.zeros(image.shape[:2], dtype=np.uint8)
-
-    monkeypatch.setattr(PREDICT_TARGET, fake_predict)
-    client = api_client(object(), torch.device("cpu"), threshold=0.62)
-    response = client.post(
-        "/predict",
-        json={
-            "base64_str": _encode(np.zeros((4, 4, 3), np.uint8)),
-            "threshold": 0.4,
-            "tiles": [1, 4],
-            "overlap": 0.4,
-        },
-    )
-    assert response.status_code == 200
-    assert captured["threshold"] == 0.4
-    assert captured["tiles"] == (1, 4)
-    assert captured["overlap"] == 0.4
-    assert response.json()["threshold_applied"] == 0.4
-
-
-def test_tiled_binary_requires_explicit_threshold(monkeypatch, api_client):
-    monkeypatch.setattr(
-        PREDICT_TARGET,
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()),
-    )
-    client = api_client(object(), torch.device("cpu"), threshold=0.62)
-    response = client.post(
-        "/predict",
-        json={
-            "base64_str": _encode(np.zeros((4, 4, 3), np.uint8)),
-            "tiles": [1, 3],
-        },
-    )
-    assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "threshold is required for tiled binary output"
-    )
-
-
-def test_probability_mode_is_explicit(monkeypatch, api_client):
+def test_probability_mode_requires_class_id(monkeypatch, api_client):
     def fake_predict(model, image, **kwargs):
         assert kwargs["output_mode"] == "probability"
+        assert kwargs["class_id"] == 3
         return np.full(image.shape[:2], 127, dtype=np.uint8)
-
     monkeypatch.setattr(PREDICT_TARGET, fake_predict)
-    client = api_client(object(), torch.device("cpu"))
-    response = client.post(
-        "/predict",
-        json={
-            "base64_str": _encode(np.zeros((8, 8, 3), np.uint8)),
-            "output_mode": "probability",
-            "tiles": [1, 3],
-        },
-    )
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
+    response = client.post("/predict", json={"base64_str": _encode(np.zeros((8, 8, 3), np.uint8)), "output_mode": "probability", "class_id": 3, "tiles": [1, 3]})
     assert response.status_code == 200
-    assert response.json()["threshold_applied"] is None
+    assert response.json()["class_id"] == 3
+    assert response.json()["value_range"] == [0, 255]
     assert np.all(_decode(response.json()["base64_str"]) == 127)
 
 
@@ -123,39 +71,23 @@ def test_rejects_invalid_image(monkeypatch, api_client):
         PREDICT_TARGET,
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()),
     )
-    client = api_client(object(), torch.device("cpu"))
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
     response = client.post("/predict", json={"base64_str": "invalid"})
     assert response.status_code == 400
     assert response.json() == {"detail": "invalid image"}
 
 
-def test_rejects_invalid_output_contract(api_client):
-    client = api_client(object(), torch.device("cpu"))
-    encoded = _encode(np.zeros((4, 4, 3), np.uint8))
-    assert (
-        client.post(
-            "/predict", json={"base64_str": encoded, "threshold": 2.0}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
-            "/predict", json={"base64_str": encoded, "output_mode": "soft"}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
-            "/predict", json={"base64_str": encoded, "tiles": [0]}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
-            "/predict", json={"base64_str": encoded, "overlap": 0.2}
-        ).status_code
-        == 422
-    )
+@pytest.mark.parametrize("fields", [
+    {"threshold": 0.5}, {"other": True}, {"output_mode": "binary"},
+    {"output_mode": "probability"}, {"output_mode": "probability", "class_id": 4},
+    {"output_mode": "probability", "class_id": -1},
+    {"output_mode": "probability", "class_id": True}, {"class_id": 1},
+    {"tiles": [0]}, {"overlap": 0.2},
+])
+def test_rejects_invalid_output_contract(api_client, fields):
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
+    response = client.post("/predict", json={"base64_str": _encode(np.zeros((4, 4, 3), np.uint8)), **fields})
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -164,14 +96,14 @@ def test_rejects_invalid_output_contract(api_client):
 )
 def test_rejects_large_image(monkeypatch, api_client, name, limit):
     monkeypatch.setattr(
-        f"src.serve.codec.{name}",
+        f"backend.codec.{name}",
         limit,
     )
     monkeypatch.setattr(
         PREDICT_TARGET,
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()),
     )
-    client = api_client(object(), torch.device("cpu"))
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
     response = client.post(
         "/predict",
         json={"base64_str": _encode(np.zeros((4, 4, 3), np.uint8))},
@@ -189,7 +121,7 @@ def test_uses_checkpoint_preprocess_contract(monkeypatch, api_client):
 
     monkeypatch.setattr(PREDICT_TARGET, fake_predict)
     client = api_client(
-        object(),
+        SimpleNamespace(num_classes=4),
         torch.device("cpu"),
         preprocess=PreprocessSpec(size=640, mode="gray_repeat"),
     )
@@ -204,6 +136,12 @@ def test_uses_checkpoint_preprocess_contract(monkeypatch, api_client):
 
 
 def test_decode_rejects_oversized_base64_before_allocating(monkeypatch):
-    monkeypatch.setattr("src.serve.codec.MAX_BASE64_LENGTH", 4)
+    monkeypatch.setattr("backend.codec.MAX_BASE64_LENGTH", 4)
     with pytest.raises(ImageLimitError):
         decode("A" * 8)
+
+
+def test_reads_preprocess_from_full_checkpoint_metadata():
+    from backend.app import read_preprocess
+    model = SimpleNamespace(loaded_meta={"preprocess": {"size": 640, "mode": "gray_repeat"}})
+    assert read_preprocess(model) == PreprocessSpec(size=640, mode="gray_repeat")

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .pairs import Pair
 
-NAMES = ("train", "valid", "calib")
+NAMES = ("train", "valid")
 Groups = dict[str, list[Pair]]
 Splits = dict[str, list[str]]
 
@@ -41,19 +41,17 @@ def save(splits: Splits, run_dir: str | Path) -> None:
             writer.writerows(zip(images, masks))
 
 
-def make(data: list[Pair], valid_ratio: float, calib_ratio: float) -> Groups:
-    if valid_ratio <= 0 or calib_ratio <= 0:
-        raise ValueError("validation/calibration ratios must be positive")
-    if valid_ratio + calib_ratio >= 1:
-        raise ValueError("validation/calibration ratios must sum to less than 1")
-
+def make(data: list[Pair], valid_ratio: float) -> Groups:
+    if not 0 < valid_ratio < 1:
+        raise ValueError("valid_ratio must be between zero and one")
+    if len(data) < 2:
+        raise ValueError("At least two image/mask pairs are required")
+    data = list(data)
     random.shuffle(data)
-    valid_n = min(len(data) - 2, max(1, round(len(data) * valid_ratio)))
-    calib_n = min(len(data) - valid_n - 1, max(1, round(len(data) * calib_ratio)))
+    valid_n = min(len(data) - 1, max(1, round(len(data) * valid_ratio)))
     return {
         "valid": data[:valid_n],
-        "calib": data[valid_n : valid_n + calib_n],
-        "train": data[valid_n + calib_n :],
+        "train": data[valid_n:],
     }
 
 

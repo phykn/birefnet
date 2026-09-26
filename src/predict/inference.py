@@ -6,10 +6,10 @@ import numpy as np
 import torch
 
 from ..prepare.convert import InputMode, convert
-from ..prepare.fit import fit_tensor, restore
+from ..prepare.fit import Fit, fit_tensor, restore
 from .tile import plan, weigh
 
-OutputMode = Literal["binary", "probability"]
+OutputMode = Literal["labels", "probability"]
 
 
 def _autocast(device: torch.device):
@@ -31,7 +31,13 @@ def _infer(
     batch = torch.from_numpy(np.stack(tensors)).to(device)
     with _autocast(device):
         logits = model(batch).logits[-1]
-    return logits[:, 0].float().cpu().numpy()
+    if logits.ndim != 4 or logits.shape[1] != model.num_classes:
+        raise RuntimeError("Model logits must have shape N,num_classes,H,W")
+    return logits.float().cpu().numpy()
+
+
+def _restore(logits: np.ndarray, fit: Fit) -> np.ndarray:
+    return np.stack([restore(channel, fit) for channel in logits])
 
 
 def _merge(
@@ -45,7 +51,7 @@ def _merge(
 ) -> np.ndarray:
     height, width = image.shape[:2]
     boxes = plan(height, width, grid=grid, overlap=overlap)
-    merged = np.zeros((height, width), dtype=np.float32)
+    merged = np.zeros((model.num_classes, height, width), dtype=np.float32)
     weight = np.zeros((height, width), dtype=np.float32)
 
     for start in range(0, len(boxes), batch_size):
@@ -62,7 +68,7 @@ def _merge(
         for index, (box, fit) in enumerate(zip(chunk, fits)):
             blend = weigh(box)
             region = np.s_[box.top : box.bottom, box.left : box.right]
-            merged[region] += restore(logits[index], fit) * blend
+            merged[:, region[0], region[1]] += _restore(logits[index], fit) * blend
             weight[region] += blend
 
     if np.any(weight <= 0):
@@ -81,6 +87,8 @@ def predict_logits(
     overlap: float = 1 / 3,
     tile_batch: int = 2,
 ) -> np.ndarray:
+    if not isinstance(model.num_classes, int) or not 2 <= model.num_classes <= 256:
+        raise ValueError("num_classes must be an integer in [2, 256]")
     grids = tuple(tiles)
     if not grids:
         raise ValueError("tiles must not be empty")
@@ -102,7 +110,7 @@ def predict_logits(
     for grid in grids:
         if grid == 1:
             tensor, fit = fit_tensor(processed, size=size, mode="rgb")
-            output = restore(_infer(model, [tensor], device)[0], fit)
+            output = _restore(_infer(model, [tensor], device)[0], fit)
         else:
             output = _merge(
                 model,
@@ -127,35 +135,31 @@ def predict(
     model: torch.nn.Module,
     image: np.ndarray,
     *,
-    output_mode: OutputMode = "binary",
-    threshold: float | None = None,
+    output_mode: OutputMode = "labels",
+    class_id: int | None = None,
     size: int = 1024,
     mode: InputMode = "rgb",
     tiles: Sequence[int] = (1,),
     overlap: float = 1 / 3,
     tile_batch: int = 2,
 ) -> np.ndarray:
-    if output_mode not in {"binary", "probability"}:
+    """Return class IDs, all float probabilities, or a selected uint8 probability."""
+    if output_mode not in {"labels", "probability"}:
         raise ValueError(f"Unsupported output_mode: {output_mode!r}")
-    if threshold is not None and not 0.0 <= threshold <= 1.0:
-        raise ValueError("threshold must be in [0, 1]")
-    grids = tuple(tiles)
-    if output_mode == "binary" and threshold is None:
-        if any(grid != 1 for grid in grids):
-            raise ValueError("threshold is required for tiled binary output")
-        threshold = 0.5
-
+    if class_id is not None:
+        if output_mode != "probability":
+            raise ValueError("class_id is only supported for probability output")
+        if (not isinstance(class_id, int) or isinstance(class_id, bool)
+                or not 0 <= class_id < model.num_classes):
+            raise ValueError("class_id must be in [0, num_classes)")
     logits = predict_logits(
-        model,
-        image,
-        size=size,
-        mode=mode,
-        tiles=grids,
-        overlap=overlap,
-        tile_batch=tile_batch,
+        model, image, size=size, mode=mode, tiles=tiles,
+        overlap=overlap, tile_batch=tile_batch,
     )
-    probability = 1.0 / (1.0 + np.exp(-np.clip(logits, -80.0, 80.0)))
-    if output_mode == "probability":
-        return np.rint(probability * 255.0).astype(np.uint8)
-    assert threshold is not None
-    return (probability >= threshold).astype(np.uint8) * 255
+    if output_mode == "labels":
+        return logits.argmax(axis=0).astype(np.uint8)
+    probs = np.exp(logits - logits.max(axis=0, keepdims=True))
+    probs /= probs.sum(axis=0, keepdims=True)
+    if class_id is None:
+        return probs
+    return np.rint(probs[class_id] * 255.0).astype(np.uint8)

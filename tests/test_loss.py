@@ -1,216 +1,102 @@
+import pytest
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 
-from src.train.loss import (
-    BoundaryBCELoss,
-    DiceLoss,
-    GCELoss,
-    IoULoss,
-    SegmentationLoss,
-)
+from src.model.output import Output
+from src.train.loss import DiceLoss, SegmentationLoss
 from src.train.objective import TrainLoss
 
 
-def test_iou_loss_zero_for_perfect_overlap():
-    pred = torch.ones(2, 1, 8, 8)
-    target = torch.ones(2, 1, 8, 8)
-    assert IoULoss()(pred, target).item() < 1e-5
+def test_ce_matches_torch_and_dice_perfect():
+    target = torch.tensor([[[0, 1], [2, 3]]])
+    logits = F.one_hot(target, 4).permute(0, 3, 1, 2).float() * 30
+    loss_fn = SegmentationLoss(lambda_region=0, lambda_boundary=0)
+    parts = loss_fn.compute(logits, target)
+    assert torch.allclose(parts["cls"], F.cross_entropy(logits, target))
+    assert parts["region_raw"] < 1e-5
 
 
-def test_iou_loss_one_for_disjoint():
-    pred = torch.zeros(2, 1, 8, 8)
-    target = torch.ones(2, 1, 8, 8)
-    loss = IoULoss()(pred, target).item()
-    assert abs(loss - 1.0) < 1e-3
-
-
-def test_segmentation_loss_returns_scalar():
-    loss_fn = SegmentationLoss()
-    pred = torch.randn(2, 1, 16, 16)
-    target = torch.randint(0, 2, (2, 1, 16, 16)).float()
-    out = loss_fn(pred, target)
-    assert out.dim() == 0
-    assert out.item() > 0
-
-
-def test_segmentation_loss_resizes_pred():
-    pred = torch.randn(2, 1, 32, 32)
-    target = torch.randint(0, 2, (2, 1, 16, 16)).float()
-    out = SegmentationLoss()(pred, target)
-    assert out.dim() == 0
-
-
-def test_gce_is_bounded_for_confident_wrong_label():
-    loss = GCELoss(q=0.7)(torch.tensor([[[[-100.0]]]]), torch.ones(1, 1, 1, 1))
-    assert loss.item() <= 1.0 / 0.7 + 1e-6
-
-
-def test_gce_weight_reduces_gt_loss_without_renormalizing():
-    logits = torch.zeros(1, 1, 1, 1)
-    target = torch.ones_like(logits)
-    loss_fn = GCELoss(q=0.7)
-    full = loss_fn(logits, target)
-    reduced = loss_fn(logits, target, weight=torch.full_like(target, 0.25))
-    assert torch.allclose(reduced, full * 0.25)
-
-
-def test_dice_applies_continuous_weight_once():
-    pred = torch.tensor([[[[1.0, 0.0]]]])
-    target = torch.ones_like(pred)
-    weight = torch.tensor([[[[0.5, 1.0]]]])
-    assert torch.allclose(DiceLoss()(pred, target, weight), torch.tensor(0.5))
-
-
-def test_region_losses_ignore_padding_and_define_empty_cases():
-    target = torch.zeros(2, 1, 4, 4)
-    valid = torch.ones_like(target)
-    valid[:, :, :, 2:] = 0
-    pred = target.clone()
-    pred[:, :, :, 2:] = 1
-    assert IoULoss()(pred, target, valid).item() == 0.0
-    assert DiceLoss()(pred, target, valid).item() == 0.0
-
-    pred[:, :, 0, 0] = 1
-    assert IoULoss()(pred, target, valid).item() > 0.9
-    assert DiceLoss()(pred, target, valid).item() > 0.9
-
-
-def test_boundary_bce_ignores_padding():
-    target = torch.zeros(1, 1, 8, 8)
-    target[:, :, 2:6, 2:6] = 1
-    valid = torch.ones_like(target)
-    valid[:, :, :, 6:] = 0
-    logits = torch.where(target > 0, torch.tensor(20.0), torch.tensor(-20.0))
-    reference = BoundaryBCELoss(radius=1)(logits, target, valid)
-    logits[:, :, :, 6:] = 100
-    assert torch.allclose(BoundaryBCELoss(radius=1)(logits, target, valid), reference)
-
-
-def test_boundary_bce_ignores_only_marked_crop_edges():
-    target = torch.ones(1, 1, 8, 8)
-    valid = torch.ones_like(target)
-    cut = torch.zeros_like(target)
-    cut[:, :, 0] = 1
-    loss_fn = BoundaryBCELoss(radius=1)
-
-    logits = torch.full_like(target, 20.0)
-    reference = loss_fn(logits, target, valid, cut=cut)
-    changed = logits.clone()
-    changed[:, :, :2] = -20.0
-    assert torch.allclose(loss_fn(changed, target, valid, cut=cut), reference)
-
-    changed = logits.clone()
-    changed[:, :, -1] = -20.0
-    assert loss_fn(changed, target, valid, cut=cut) > reference
-
-
-class _TrainModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv = nn.Conv2d(3, 1, 1)
-
-    def forward(self, x):
-        from src.model.output import Output
-
-        pred = self.conv(x)
-        if self.training:
-            gdt_pred = pred[:, :, ::2, ::2]
-            gdt_label = torch.zeros_like(pred)
-            return Output(
-                logits=[pred, pred], gdt=([gdt_pred], [gdt_label])
-            )
-        return Output(logits=[pred], gdt=None)
-
-
-def test_multiscale_boundary_loss_is_not_diluted():
-    loss_fn = TrainLoss(lambda_boundary=1.0)
-    preds = [torch.zeros(1, 1, size, size) for size in (8, 16, 32, 64)]
-    mask = torch.zeros(1, 1, 64, 64)
-    mask[:, :, 16:48, 16:48] = 1
-    valid = torch.ones_like(mask)
-    parts = loss_fn._segment(preds, mask, valid)
-    expected = loss_fn.seg.compute(preds[-1], mask, valid)["boundary"]
-    assert torch.allclose(parts["boundary"], expected)
-
-
-def test_gdt_loss_ignores_laplacian_border_around_letterbox():
-    loss_fn = TrainLoss()
-    valid = torch.ones(1, 1, 8, 8)
-    valid[:, :, :, 4:] = 0
-    label = torch.zeros(1, 1, 8, 8)
-    reference_pred = torch.zeros_like(label)
-    changed_pred = reference_pred.clone()
-    changed_pred[:, :, :, 2:] = 100
-    reference = loss_fn._guide(([reference_pred], [label]), valid)
-    changed = loss_fn._guide(([changed_pred], [label]), valid)
-    assert torch.allclose(changed, reference)
-
-    changed_pred[:, :, :, 1] = 100
-    changed = loss_fn._guide(([changed_pred], [label]), valid)
-    assert changed > reference
-
-
-def test_gdt_target_does_not_receive_gradient():
-    loss_fn = TrainLoss()
-    pred = torch.zeros(1, 1, 8, 8, requires_grad=True)
-    label = torch.zeros(1, 1, 8, 8, requires_grad=True)
-    loss_fn._guide(([pred], [label]), torch.ones_like(pred)).backward()
-    assert pred.grad is not None
-    assert label.grad is None
-
-
-def test_teacher_only_reduces_conflicting_confident_gt():
-    loss_fn = TrainLoss(teacher_confidence=0.95, min_gt_weight=0.25)
-    target = torch.zeros(1, 1, 1, 2)
-    teacher = torch.tensor([[[[20.0, -20.0]]]])
-    weight, confidence, _ = loss_fn._weigh(teacher, target, scale=1.0)
-    assert torch.allclose(weight, torch.tensor([[[[0.25, 1.0]]]]))
-    assert torch.all(confidence > 0.99)
-
-
-def test_custom_loss_train_mode_returns_all_terms():
-    model = _TrainModel().train()
-    batch = {
-        "weak": torch.randn(2, 3, 8, 8),
-        "strong": torch.randn(2, 3, 8, 8),
-        "mask": torch.randint(0, 2, (2, 1, 8, 8)).float(),
-        "valid": torch.ones(2, 1, 8, 8),
-    }
-    inputs = torch.cat([batch["weak"], batch["strong"]], dim=0)
-    loss_dict, loss = TrainLoss()(model(inputs), batch)
-    assert {
-        "loss",
-        "seg",
-        "cls_raw",
-        "region_raw",
-        "boundary_raw",
-        "gt_weight",
-        "teacher_raw",
-        "teacher",
-        "aux_raw",
-        "aux",
-    } <= set(loss_dict)
-    assert torch.isclose(loss, loss_dict["loss"])
+def test_loss_resizes_indices_and_backpropagates_cpu():
+    logits = torch.randn(2, 4, 4, 4, requires_grad=True)
+    target = torch.randint(0, 4, (2, 8, 8))
+    target[:, :2] = 255
+    loss = SegmentationLoss()(logits, target)
+    assert loss.ndim == 0 and torch.isfinite(loss)
     loss.backward()
-    assert model.conv.weight.grad is not None
+    assert torch.isfinite(logits.grad).all()
 
 
-def test_custom_loss_eval_mode_returns_seg_only():
-    model = _TrainModel().eval()
-    batch = {
-        "weak": torch.randn(2, 3, 8, 8),
-        "strong": torch.randn(2, 3, 8, 8),
-        "mask": torch.randint(0, 2, (2, 1, 8, 8)).float(),
-        "valid": torch.ones(2, 1, 8, 8),
-    }
-    loss_dict, loss = TrainLoss()(model(batch["weak"]), batch)
-    assert {
-        "seg",
-        "cls_raw",
-        "region_raw",
-        "boundary_raw",
-        "cls",
-        "region",
-        "boundary",
-    } == set(loss_dict)
-    assert torch.isclose(loss, loss_dict["seg"])
+def test_padding_ignore_do_not_affect_loss_or_gradient():
+    target = torch.randint(0, 4, (1, 8, 8))
+    target[:, :, 6:] = 255
+    valid = torch.ones(1, 1, 8, 8)
+    valid[:, :, :2] = 0
+    logits = torch.randn(1, 4, 8, 8, requires_grad=True)
+    reference = SegmentationLoss()(logits, target, valid)
+    changed = logits.detach().clone()
+    changed[:, :, :, 6:] = 100
+    changed[:, :, :2] = -100
+    assert torch.allclose(SegmentationLoss()(changed, target, valid), reference)
+    reference.backward()
+    assert not logits.grad[:, :, :, 6:].any()
+    assert not logits.grad[:, :, :2].any()
+
+
+def test_all_ignored_loss_is_differentiable_zero():
+    logits = torch.randn(1, 4, 8, 8, requires_grad=True)
+    loss = SegmentationLoss()(logits, torch.full((1, 8, 8), 255, dtype=torch.long))
+    assert loss == 0
+    loss.backward()
+    assert not logits.grad.any()
+
+
+def test_invalid_label_and_binary_channel_are_rejected():
+    with pytest.raises(ValueError, match="channels"):
+        SegmentationLoss()(torch.zeros(1, 1, 2, 2), torch.zeros(1, 2, 2, dtype=torch.long))
+    with pytest.raises(ValueError, match="invalid class"):
+        SegmentationLoss()(torch.zeros(1, 4, 2, 2), torch.full((1, 2, 2), 4, dtype=torch.long))
+
+
+def test_classwise_dice_counts_each_class():
+    target = torch.eye(4).reshape(1, 4, 1, 4)
+    assert DiceLoss()(target, target) == 0
+    assert DiceLoss()(target.flip(1), target) > .99
+
+
+def test_deep_supervision_boundary_is_not_diluted():
+    loss_fn = TrainLoss(lambda_boundary=1)
+    preds = [torch.zeros(1, 4, size, size) for size in (8, 16, 32)]
+    target = torch.zeros(1, 32, 32, dtype=torch.long)
+    target[:, 8:24, 8:24] = 2
+    valid = torch.ones(1, 1, 32, 32)
+    parts = loss_fn._segment(preds, target, valid)
+    assert torch.allclose(parts["boundary"], loss_fn.seg.compute(preds[-1], target, valid)["boundary"])
+
+
+def test_teacher_softmax_only_downweights_confident_conflicting_labels():
+    teacher = torch.tensor([[[[0., 40.]], [[40., 0.]], [[0., 0.]], [[0., 0.]]]])
+    target = torch.zeros(1, 1, 2, dtype=torch.long)
+    weight, conf, prob = TrainLoss()._weigh(teacher, target, 1.)
+    assert torch.allclose(weight, torch.tensor([[[[.25, 1.]]]]))
+    assert torch.allclose(prob.sum(1), torch.ones_like(target, dtype=torch.float32))
+    assert (conf > .99).all()
+
+
+def test_two_view_multiscale_and_binary_gdt_cpu_backward():
+    preds = [torch.randn(4, 4, size, size, requires_grad=True) for size in (4, 8)]
+    edge = torch.randn(4, 1, 8, 8, requires_grad=True)
+    label = torch.rand(4, 1, 8, 8, requires_grad=True)
+    batch = {"mask": torch.randint(0, 4, (2, 8, 8)), "valid": torch.ones(2, 1, 8, 8)}
+    parts, loss = TrainLoss()(Output(preds, ([edge], [label])), batch)
+    assert torch.isfinite(loss) and parts["aux"] > 0
+    loss.backward()
+    assert all(pred.grad is not None for pred in preds)
+    assert edge.grad is not None and label.grad is None
+
+
+def test_single_view_without_gdt_still_deep_supervises():
+    preds = [torch.randn(1, 4, size, size, requires_grad=True) for size in (4, 8)]
+    parts, loss = TrainLoss()(Output(preds), {"mask": torch.randint(0, 4, (1, 8, 8))})
+    loss.backward()
+    assert parts["aux"] == 0
+    assert all(pred.grad is not None for pred in preds)

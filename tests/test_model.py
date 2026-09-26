@@ -1,230 +1,95 @@
+import pytest
 import torch
 import torch.nn as nn
-import pytest
+import torch.nn.functional as F
 
 import src.model.swin as swin_model
-
-from src.adapt.inject import inject_linear
-from src.adapt.layer import LoRAConv2d, LoRALinear
-from src.adapt.wrap import LoRABiRefNet
+from src.model import BiRefNet, Output
+from src.model.decoder.net import Decoder
 from src.model.swin import BasicLayer
 
 
-class _Decoder(nn.Module):
+class TinyBackbone(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv = nn.Conv2d(3, 4, 3, padding=1)
-        self.offset_conv = nn.Conv2d(4, 4, 3, padding=1)
-        self.modulator_conv = nn.Conv2d(4, 4, 3, padding=1)
-        self.regular_conv = nn.Conv2d(4, 4, 3, padding=1)
-
-
-class _Backbone(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fc1 = nn.Linear(8, 16)
-        self.fc2 = nn.Linear(16, 4)
-        self.bn = nn.BatchNorm2d(4)
-
-
-class _FakeBiRefNet(nn.Module):
-    """Minimal stand-in exposing the attributes LoRABiRefNet touches."""
-
-    def __init__(self):
-        super().__init__()
-        self.bb = _Backbone()
-        self.squeeze_module = _Decoder()
-        self.decoder = _Decoder()
+        self.patch_embed = nn.Conv2d(3, 4, 1)
+        self.layers = nn.ModuleList([nn.Conv2d(4, 4, 1), nn.Conv2d(4, 8, 1), nn.Conv2d(8, 16, 1), nn.Conv2d(16, 32, 1)])
+        for idx, channels in enumerate([4, 8, 16, 32]):
+            setattr(self, f"norm{idx}", nn.BatchNorm2d(channels))
 
     def forward(self, x):
-        return x
+        x = self.patch_embed(F.avg_pool2d(x, 4))
+        outs = []
+        for idx, layer in enumerate(self.layers):
+            if idx:
+                x = F.avg_pool2d(x, 2)
+            x = getattr(self, f"norm{idx}")(layer(x))
+            outs.append(x)
+        return outs
 
 
-def test_lora_birefnet_freezes_base_and_marks_adapters_trainable():
-    lora = LoRABiRefNet(_FakeBiRefNet(), rank=2, alpha=4.0)
-    base_trainable = [
-        p
-        for n, p in lora.named_parameters()
-        if p.requires_grad and ".down." not in n and ".up." not in n
-    ]
-    assert base_trainable == []
-    assert lora.stats["trainable"] > 0
-    assert lora.stats["frozen"] > 0
+@pytest.fixture
+def tiny_model(monkeypatch):
+    monkeypatch.setattr("src.model.net.build_large", lambda **kwargs: TinyBackbone())
+    return BiRefNet(channels=[32, 16, 8, 4])
 
 
-def test_lora_birefnet_excludes_geometry_convs_in_decoder():
-    lora = LoRABiRefNet(_FakeBiRefNet(), rank=2, alpha=4.0)
-    dec = lora.model.decoder
-    assert isinstance(dec.conv, LoRAConv2d)
-    assert not isinstance(dec.offset_conv, LoRAConv2d)
-    assert not isinstance(dec.modulator_conv, LoRAConv2d)
-    assert not isinstance(dec.regular_conv, LoRAConv2d)
+def test_multiclass_forward_and_backward_cpu(tiny_model):
+    x = torch.randn(1, 3, 64, 64)
+    tiny_model.train()
+    output = tiny_model(x)
+    assert isinstance(output, Output)
+    assert len(output.logits) == 4
+    assert output.logits[-1].shape == (1, 4, 64, 64)
+    assert all(pred.shape[1] == 4 for pred in output.logits)
+    assert output.gdt is not None
+    preds, labels = output.gdt
+    assert len(preds) == len(labels) == 3
+    assert all(pred.shape[1] == label.shape[1] == 1 for pred, label in zip(preds, labels))
+    assert all(not label.requires_grad for label in labels)
+    loss = sum(F.cross_entropy(pred, torch.zeros(pred.shape[0], *pred.shape[2:], dtype=torch.long)) for pred in output.logits)
+    loss += sum(F.binary_cross_entropy_with_logits(pred, F.interpolate(label, size=pred.shape[2:])) for pred, label in zip(preds, labels))
+    loss.backward()
+    assert tiny_model.decoder.conv_out1[0].weight.grad is not None
+    assert tiny_model.squeeze_module[0].conv_out.weight.grad is not None
+    assert all(param.grad is None for param in tiny_model.bb.parameters())
+    tiny_model.eval()
+    with torch.inference_mode():
+        output = tiny_model(x)
+    assert isinstance(output, Output)
+    assert output.gdt is None
+    assert output.logits[-1].shape == (1, 4, 64, 64)
 
 
-def test_lora_birefnet_applies_lora_to_squeeze_module():
-    lora = LoRABiRefNet(_FakeBiRefNet(), rank=2, alpha=4.0)
-    squeeze = lora.model.squeeze_module
-    assert isinstance(squeeze.conv, LoRAConv2d)
-    assert not isinstance(squeeze.offset_conv, LoRAConv2d)
-    assert not isinstance(squeeze.modulator_conv, LoRAConv2d)
-    assert not isinstance(squeeze.regular_conv, LoRAConv2d)
+@pytest.mark.parametrize("mode,stages", [("decoder", 0), ("partial", 1), ("partial", 2), ("full", 4)])
+def test_finetune_modes_select_parameters(tiny_model, mode, stages):
+    tiny_model.configure_finetune(mode, backbone_stages=max(stages, 1))
+    for idx, layer in enumerate(tiny_model.bb.layers):
+        assert all(param.requires_grad == (idx >= 4 - stages) for param in layer.parameters())
+    assert all(param.requires_grad for param in tiny_model.decoder.parameters())
+    assert tiny_model.list_trainable()
+    assert tiny_model.stats["total"] == tiny_model.stats["frozen"] + tiny_model.stats["trainable"]
+    tiny_model.train()
+    assert all(not module.training for module in tiny_model.modules() if isinstance(module, nn.BatchNorm2d))
 
 
-def test_lora_birefnet_applies_lora_to_backbone_linears():
-    lora = LoRABiRefNet(_FakeBiRefNet(), rank=2, alpha=4.0)
-    assert isinstance(lora.model.bb.fc1, LoRALinear)
-    assert isinstance(lora.model.bb.fc2, LoRALinear)
+def test_batchnorm_freezing_can_be_disabled(tiny_model):
+    tiny_model.configure_finetune("full", freeze_bn=False)
+    tiny_model.train()
+    assert all(module.training for module in tiny_model.modules() if isinstance(module, nn.BatchNorm2d))
 
 
-def test_zero_initialized_lora_preserves_base_eval_output():
-    class _EvalStub(_FakeBiRefNet):
-        def forward(self, x):
-            return [self.decoder.conv(x)]
-
-    base = _EvalStub().eval()
-    x = torch.randn(1, 3, 8, 8)
-    expected = base(x)[0].detach().clone()
-    wrapped = LoRABiRefNet(base, rank=2, alpha=4.0)
-    assert wrapped.training is False
-    actual = wrapped(x).logits[0]
-    assert torch.allclose(actual, expected)
-
-
-@pytest.mark.parametrize("rank", [True, 1.5, 0])
-def test_wrapper_rejects_invalid_rank_before_freezing_base(rank):
-    base = _FakeBiRefNet()
-    with pytest.raises(ValueError, match="rank"):
-        LoRABiRefNet(base, rank=rank)
-    assert all(param.requires_grad for param in base.parameters())
-    assert isinstance(base.bb.fc1, nn.Linear)
-
-
-def test_lora_birefnet_keeps_batchnorm_in_eval_when_training():
-    lora = LoRABiRefNet(_FakeBiRefNet(), rank=2, alpha=4.0).train()
-    assert lora.training is True
-    assert lora.model.bb.bn.training is False
-
-
-def test_list_trainable_only_returns_trainable():
-    lora = LoRABiRefNet(_FakeBiRefNet(), rank=2, alpha=4.0)
-    params = lora.list_trainable()
-    assert len(params) > 0
-    assert all(p.requires_grad for p in params)
-
-
-def test_overlay_round_trip_includes_lora_and_full_head(tmp_path):
-    lora = LoRABiRefNet(
-        _FakeBiRefNet(),
-        rank=2,
-        alpha=4.0,
-        trainable_heads=["decoder.conv"],
-    )
-    assert isinstance(lora.model.decoder.conv, nn.Conv2d)
-    assert not isinstance(lora.model.decoder.conv, LoRAConv2d)
-    for p in lora.list_trainable():
-        with torch.no_grad():
-            p.add_(torch.randn_like(p))
-
-    path = tmp_path / "overlay.pth"
-    lora.save_overlay(str(path))
-    assert path.exists()
-
-    saved_state = {
-        n: p.detach().clone() for n, p in lora.named_parameters() if p.requires_grad
-    }
-
-    fresh = LoRABiRefNet(
-        _FakeBiRefNet(),
-        rank=2,
-        alpha=4.0,
-        trainable_heads=["decoder.conv"],
-    )
-    fresh.load_overlay(str(path))
-    loaded_state = {n: p for n, p in fresh.named_parameters() if p.requires_grad}
-
-    assert set(saved_state.keys()) == set(loaded_state.keys())
-    for k in saved_state:
-        assert torch.allclose(saved_state[k], loaded_state[k])
-
-
-def test_checkpointed_basic_layer_propagates_grad_to_lora_with_frozen_input():
-    """Regression: gradient checkpointing must use use_reentrant=False so that
-    LoRA adapters inside frozen swin blocks still receive gradients when the
-    input tensor has requires_grad=False (which is the case under LoRA training,
-    since the patch_embed conv is frozen)."""
-    dim = 12
-    layer = BasicLayer(
-        dim=dim,
-        depth=2,
-        num_heads=2,
-        window_size=4,
-        mlp_ratio=2.0,
-        drop_path=0.0,
-        downsample=None,
-        use_checkpoint=True,
-    )
-    for p in layer.parameters():
-        p.requires_grad = False
-    inject_linear(layer, rank=2, alpha=4.0)
-
-    adapter_params = [p for p in layer.parameters() if p.requires_grad]
-    assert len(adapter_params) > 0
-
-    h = w = 8
-    x = torch.randn(1, h * w, dim, requires_grad=False)
-    out, *_ = layer(x, h, w)
-    out.sum().backward()
-
-    grads = [p.grad for p in adapter_params]
-    assert all(g is not None for g in grads), (
-        "LoRA adapters inside checkpointed swin blocks did not receive gradients; "
-        "gradient checkpointing likely fell back to use_reentrant=True"
-    )
-    assert any(g.abs().sum() > 0 for g in grads)
-
-
-def test_overlay_rejects_invalid_format(tmp_path):
-    lora = LoRABiRefNet(_FakeBiRefNet(), rank=2, alpha=4.0)
-    path = tmp_path / "bad.pth"
-    torch.save({"unrelated.key": torch.zeros(1)}, str(path))
-    try:
-        lora.load_overlay(str(path))
-    except RuntimeError:
-        return
-    raise AssertionError("Expected RuntimeError on key mismatch")
-
-
-def test_lora_birefnet_forward_returns_output_in_both_modes():
-    from src.model.output import Output
-
-    class _Stub(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.bb = _Backbone()
-            self.squeeze_module = _Decoder()
-            self.decoder = _Decoder()
-
-        def forward(self, x):
-            pred = torch.zeros(x.shape[0], 1, 4, 4)
-            if self.training:
-                gdt_preds = [torch.zeros(x.shape[0], 1, 4, 4)]
-                gdt_labels = [torch.zeros(x.shape[0], 1, 4, 4)]
-                scaled_preds = [[gdt_preds, gdt_labels], [pred, pred]]
-                return [scaled_preds, [None]]
-            return [pred, pred]
-
-    lora = LoRABiRefNet(_Stub(), rank=2, alpha=4.0)
-
-    lora.train()
-    out_train = lora(torch.randn(1, 3, 8, 8))
-    assert isinstance(out_train, Output)
-    assert isinstance(out_train.logits, list)
-    assert out_train.gdt is not None
-
-    lora.eval()
-    out_eval = lora(torch.randn(1, 3, 8, 8))
-    assert isinstance(out_eval, Output)
-    assert out_eval.gdt is None
+def test_guidance_marks_foreground_class_interfaces():
+    decoder = Decoder([64, 32, 16, 8])
+    logits = torch.full((1, 4, 8, 8), -8.0, requires_grad=True)
+    with torch.no_grad():
+        logits[:, 1, :, :4] = 8
+        logits[:, 2, :, 4:] = 8
+    label = decoder.guidance(logits, torch.ones(1, 1, 8, 8))
+    assert label.shape == (1, 1, 8, 8)
+    assert label.max() > 0
+    assert label[..., 3].sum() > label[..., 0].sum()
+    assert not label.requires_grad
 
 
 def test_checkpointed_basic_layer_skips_checkpoint_without_grad(monkeypatch):
@@ -271,3 +136,33 @@ def test_checkpointed_basic_layer_keeps_checkpoint_with_grad(monkeypatch):
     layer(torch.randn(1, 64, 12), 8, 8)
 
     assert calls == [1]
+
+
+def test_full_checkpoint_predictor_skips_missing_base_weights(tiny_model, tmp_path):
+    from omegaconf import OmegaConf
+    from src.build.model import build_predictor
+
+    path = tmp_path / "model.pth"
+    torch.save({
+        "format": "birefnet-multiclass-v1", "model": tiny_model.state_dict(),
+        "num_classes": 4, "preprocess": {"size": 64},
+    }, path)
+    cfg = OmegaConf.create({"birefnet": {
+        "weight": "absent_base.pth", "channels": [32, 16, 8, 4],
+        "grad_checkpoint": False, "num_classes": 4,
+    }})
+    loaded = build_predictor(cfg, str(path), torch.device("cpu"))
+    assert loaded.training is False
+    assert loaded.loaded_meta["preprocess"] == {"size": 64}
+    for key, value in loaded.state_dict().items():
+        assert torch.equal(value, tiny_model.state_dict()[key])
+
+
+def test_checkpointed_partial_layer_receives_gradient_with_frozen_input():
+    layer = BasicLayer(
+        dim=12, depth=1, num_heads=2, window_size=4, mlp_ratio=2.0,
+        drop_path=0.0, downsample=None, use_checkpoint=True,
+    )
+    out, *_ = layer(torch.randn(1, 64, 12), 8, 8)
+    out.square().mean().backward()
+    assert all(param.grad is not None for param in layer.parameters())

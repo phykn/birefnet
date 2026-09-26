@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
-from ..predict.inference import predict as predict_mask
+from src.predict.inference import predict as predict_mask
 
 from .codec import ImageLimitError, decode, encode
 from .schema import HealthResponse, PredictRequest, PredictResponse
@@ -16,17 +16,9 @@ async def check_health(request: Request) -> HealthResponse:
 
 @router.post("/predict", response_model=PredictResponse)
 async def predict(request: Request, body: PredictRequest) -> PredictResponse:
-    threshold = body.threshold
-    if body.output_mode == "binary":
-        if threshold is None and any(grid != 1 for grid in body.tiles):
-            raise HTTPException(
-                status_code=422,
-                detail="threshold is required for tiled binary output",
-            )
-        if threshold is None:
-            threshold = request.app.state.threshold
-        if threshold is None:
-            threshold = 0.5
+    num_classes = request.app.state.model.num_classes
+    if body.class_id is not None and body.class_id >= num_classes:
+        raise HTTPException(status_code=422, detail="class_id must be in [0, num_classes)")
 
     async with request.app.state.predict_sem:
         try:
@@ -41,13 +33,13 @@ async def predict(request: Request, body: PredictRequest) -> PredictResponse:
             request.app.state.model,
             image,
             output_mode=body.output_mode,
-            threshold=threshold,
+            class_id=body.class_id,
             size=request.app.state.preprocess.size,
             mode=request.app.state.preprocess.mode,
             tiles=body.tiles,
             overlap=body.overlap,
         )
-        data = await run_in_threadpool(encode, mask)
+        data = await run_in_threadpool(encode, mask, indexed=body.output_mode == "labels")
 
     height, width = mask.shape[:2]
     return PredictResponse(
@@ -57,5 +49,7 @@ async def predict(request: Request, body: PredictRequest) -> PredictResponse:
         width=width,
         channel=mask.shape[2] if mask.ndim == 3 else None,
         output_mode=body.output_mode,
-        threshold_applied=threshold if body.output_mode == "binary" else None,
+        num_classes=num_classes,
+        class_id=body.class_id,
+        value_range=(0, num_classes - 1) if body.output_mode == "labels" else (0, 255),
     )

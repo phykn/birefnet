@@ -39,27 +39,29 @@ def _loader(cfg: Any, dataset: MaskDataset, shuffle: bool) -> DataLoader:
 def build(
     cfg: Any,
     splits: Splits | None = None,
-) -> tuple[DataLoader, DataLoader, DataLoader, Splits]:
+) -> tuple[DataLoader, DataLoader, Splits]:
     image_paths = glob(os.path.join(cfg.data.image_dir, "*"))
     mask_paths = glob(os.path.join(cfg.data.mask_dir, "*"))
     data = pair_files(image_paths, mask_paths)
 
-    if len(data) < 3:
+    if len(data) < 2:
         raise ValueError(
-            "At least three image/mask pairs are required for train/valid/calibration"
+            "At least two image/mask pairs are required for train/valid"
         )
 
     groups = (
-        make(data, float(cfg.data.valid_ratio), float(cfg.data.calib_ratio))
+        make(data, float(cfg.data.valid_ratio))
         if splits is None
         else restore(data, splits)
     )
     train_data = groups["train"]
     valid_data = groups["valid"]
-    calib_data = groups["calib"]
+    label_options = dict(num_classes=int(cfg.birefnet.num_classes),
+                         ignore_index=int(cfg.data.get("ignore_index", 255)))
 
     train_dataset = MaskDataset(
         data=train_data,
+        **label_options,
         size=cfg.data.size,
         train=True,
         mode=cfg.data.get("mode", "rgb"),
@@ -70,12 +72,7 @@ def build(
     )
     valid_dataset = MaskDataset(
         data=valid_data,
-        size=cfg.data.size,
-        train=False,
-        mode=cfg.data.get("mode", "rgb"),
-    )
-    calib_set = MaskDataset(
-        data=calib_data,
+        **label_options,
         size=cfg.data.size,
         train=False,
         mode=cfg.data.get("mode", "rgb"),
@@ -83,5 +80,4 @@ def build(
 
     train_loader = _loader(cfg, train_dataset, shuffle=True)
     valid_loader = _loader(cfg, valid_dataset, shuffle=False)
-    calib_loader = _loader(cfg, calib_set, shuffle=False)
-    return train_loader, valid_loader, calib_loader, pack(groups)
+    return train_loader, valid_loader, pack(groups)

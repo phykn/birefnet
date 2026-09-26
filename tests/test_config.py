@@ -6,10 +6,10 @@ from src.config import ROOT, load_config, load_run
 
 def test_explicit_config_overrides_shared_model_defaults(tmp_path):
     path = tmp_path / "train.yaml"
-    OmegaConf.save({"lora": {"rank": 4}, "train": {"steps": 9}}, path)
+    OmegaConf.save({"birefnet": {"num_classes": 5}, "train": {"steps": 9}}, path)
     cfg = load_config(path)
-    assert cfg.lora.rank == 4
-    assert cfg.lora.alpha == load_config().lora.alpha
+    assert cfg.birefnet.num_classes == 5
+    assert cfg.birefnet.weight == load_config().birefnet.weight
     assert cfg.train.steps == 9
 
 

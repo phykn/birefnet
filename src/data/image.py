@@ -9,4 +9,6 @@ def read_image(path: str) -> np.ndarray:
 
 def read_mask(path: str) -> np.ndarray:
     with Image.open(path) as image:
-        return np.asarray(image.convert("L"), dtype=np.uint8)
+        if image.mode not in {"P", "L", "I", "I;16", "1"}:
+            raise ValueError(f"Mask must contain class indices, got mode {image.mode}: {path}")
+        return np.asarray(image, dtype=np.int64)

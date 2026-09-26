@@ -35,12 +35,12 @@ def test_build_loaders_rejects_unpaired_stems(tmp_path):
     Image.new("RGB", (4, 4)).save(image_dir / "sample.png")
     cfg = OmegaConf.create(
         {
+            "birefnet": {"num_classes": 4},
             "data": {
                 "image_dir": str(image_dir),
                 "mask_dir": str(mask_dir),
                 "size": 8,
                 "valid_ratio": 0.2,
-                "calib_ratio": 0.2,
             },
             "augment": {
                 "weak": {"brightness": 0.2, "contrast": 0.2},
@@ -65,23 +65,21 @@ def test_build_loaders_restores_saved_split_membership(tmp_path):
         Image.new("L", (4, 4)).save(mask_dir / f"{name}.png")
 
     splits = {
-        "train_image": ["c.png"],
-        "train_mask": ["c.png"],
+        "train_image": ["c.png", "b.png"],
+        "train_mask": ["c.png", "b.png"],
         "valid_image": ["a.png"],
         "valid_mask": ["a.png"],
-        "calib_image": ["b.png"],
-        "calib_mask": ["b.png"],
     }
     save_splits(splits, run_dir)
     loaded = load_splits(run_dir)
     cfg = OmegaConf.create(
         {
+            "birefnet": {"num_classes": 4},
             "data": {
                 "image_dir": str(image_dir),
                 "mask_dir": str(mask_dir),
                 "size": 8,
                 "valid_ratio": 0.2,
-                "calib_ratio": 0.2,
             },
             "augment": {
                 "weak": {"brightness": 0.2, "contrast": 0.2},
@@ -91,12 +89,11 @@ def test_build_loaders_restores_saved_split_membership(tmp_path):
         }
     )
 
-    train, valid, calib, actual = build_data(cfg, loaded)
+    train, valid, actual = build_data(cfg, loaded)
 
     assert actual == splits
     assert Path(train.dataset.data[0][0]).name == "c.png"
     assert Path(valid.dataset.data[0][0]).name == "a.png"
-    assert Path(calib.dataset.data[0][0]).name == "b.png"
 
 
 def test_create_run_dir_never_reuses_existing_run(tmp_path):

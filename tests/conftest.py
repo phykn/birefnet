@@ -12,18 +12,16 @@ if str(ROOT) not in sys.path:
 
 @pytest.fixture
 def api_client():
-    from src.serve.app import build_app
+    from backend.app import build_app
 
     def _build(
         model,
         device: torch.device,
-        threshold: float | None = None,
         preprocess=None,
     ) -> TestClient:
         app = build_app(
             model=model,
             device=device,
-            threshold=threshold,
             preprocess=preprocess,
         )
         return TestClient(app)

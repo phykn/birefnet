@@ -4,7 +4,6 @@ import torch
 from omegaconf import OmegaConf
 
 from src.build.data import build as build_data
-from src.build.model import adapt
 from src.build.model import build as build_model
 from src.config import load_run
 from src.data.split import load as load_splits
@@ -26,9 +25,8 @@ def main() -> None:
     saved_splits = load_splits(run_dir) if run_dir is not None else None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    base = build_model(cfg).to(device)
-    model = adapt(cfg, base)
-    train_loader, valid_loader, calib_loader, splits = build_data(
+    model = build_model(cfg, load_pretrained=checkpoint is None).to(device)
+    train_loader, valid_loader, splits = build_data(
         cfg,
         saved_splits,
     )
@@ -37,7 +35,6 @@ def main() -> None:
         model=model,
         train_loader=train_loader,
         valid_loader=valid_loader,
-        calib_loader=calib_loader,
         save_dir=run_dir,
     )
     if checkpoint is not None:
@@ -45,11 +42,10 @@ def main() -> None:
 
     n_train = len(splits["train_image"])
     n_valid = len(splits["valid_image"])
-    n_calib = len(splits["calib_image"])
     total, trainable = model.stats["total"], model.stats["trainable"]
-    print(f"\n[Dataset] train={n_train}, valid={n_valid}, calib={n_calib}")
+    print(f"\n[Dataset] train={n_train}, valid={n_valid}")
     print(
-        f"[LoRABiRefNet] total={total:,}  trainable={trainable:,}  "
+        f"[BiRefNet] total={total:,}  trainable={trainable:,}  "
         f"ratio={trainable / total:.2%}"
     )
 

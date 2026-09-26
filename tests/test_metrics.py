@@ -1,92 +1,46 @@
-import numpy as np
 import torch
+import torch.nn.functional as F
 
-from src.train.metrics import (
-    boundary,
-    brier,
-    dice,
-    ece,
-    iou_at_thresholds,
-    iou_logits,
-)
+from src.train.metrics import brier, confusion_matrix, dice, ece, iou_logits, scores
 
 
-def test_region_metrics_define_empty_and_perfect_cases():
-    target = torch.zeros(1, 1, 8, 8)
-    negative = torch.full_like(target, -20.0)
-    assert iou_logits(negative, target).item() == 1.0
-    assert dice(negative, target).item() == 1.0
-
-    target[:, :, 2:6, 2:6] = 1
-    perfect = torch.where(target > 0, torch.tensor(20.0), torch.tensor(-20.0))
-    assert iou_logits(perfect, target).item() == 1.0
-    assert dice(perfect, target).item() == 1.0
-
-
-def test_boundary_f1_matching_shift_and_empty_contract():
-    empty = np.zeros((16, 16), dtype=np.uint8)
-    assert boundary(empty, empty, tolerance_px=1) == 1.0
-
-    target = empty.copy()
-    target[4:12, 4:12] = 1
-    assert boundary(target, target, tolerance_px=1) == 1.0
-
-    shifted = empty.copy()
-    shifted[4:12, 6:14] = 1
-    assert 0.0 < boundary(shifted, target, tolerance_px=1) < 1.0
+def test_confusion_uses_all_classes_and_excludes_ignore_and_padding():
+    target = torch.tensor([[[0, 1, 2], [3, 255, 2]]])
+    pred = torch.tensor([[[0, 2, 2], [3, 0, 0]]])
+    valid = torch.tensor([[[[1., 1., 1.], [1., 1., 0.]]]])
+    matrix = confusion_matrix(pred, target, valid)
+    expected = torch.tensor([[1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+    assert torch.equal(matrix, expected)
+    result = scores(matrix)
+    assert torch.allclose(result["per_class_iou"], torch.tensor([1., 0., .5, 1.], dtype=torch.float64))
+    assert result["miou"] == .625
+    assert result["pixel_accuracy"] == .75
+    assert torch.equal(result["per_class_recall"], torch.tensor([1., 0., 1., 1.], dtype=torch.float64))
 
 
-def test_probability_calibration_metrics_are_masked():
-    target = torch.tensor([[[[0.0, 1.0, 1.0]]]])
-    logits = torch.tensor([[[[-20.0, 20.0, -20.0]]]])
-    valid = torch.tensor([[[[1.0, 1.0, 0.0]]]])
-    assert brier(logits, target, valid).item() < 1e-6
-    assert ece(logits, target, valid).item() < 1e-6
+def test_perfect_logits_and_absent_classes():
+    target = torch.tensor([[[0, 1], [2, 3]]])
+    logits = F.one_hot(target, 4).permute(0, 3, 1, 2).float() * 40
+    assert iou_logits(logits, target) == 1
+    assert dice(logits, target) == 1
+    result = scores(confusion_matrix(torch.zeros(1, 2, 2, dtype=torch.long), torch.zeros(1, 2, 2, dtype=torch.long)))
+    assert result["miou"] == 1
+    assert result["per_class_iou"][1:].isnan().all()
 
 
-def test_iou_at_thresholds_matches_scalar_sweep_including_equal_values():
-    probability = np.array(
-        [[0.2, 0.3, 0.5], [0.7, 0.9, np.nan]],
-        dtype=np.float32,
-    )
-    target = np.array(
-        [[0, 1, 1], [0, 1, 0]],
-        dtype=bool,
-    )
-    thresholds = [0.3, 0.5, 0.7]
-    expected = []
-    for threshold in thresholds:
-        pred = probability >= threshold
-        intersection = np.logical_and(pred, target).sum()
-        union = np.logical_or(pred, target).sum()
-        expected.append(1.0 if union == 0 else intersection / union)
-
-    np.testing.assert_allclose(
-        iou_at_thresholds(probability, target, thresholds),
-        expected,
-        rtol=0,
-        atol=0,
-    )
+def test_calibration_uses_softmax_and_ignores_padding():
+    target = torch.tensor([[[0, 1, 255]]])
+    logits = torch.tensor([[[[40., 0., 0.]], [[0., 40., 40.]], [[0., 0., 0.]], [[0., 0., 0.]]]])
+    assert brier(logits, target) < 1e-6
+    assert ece(logits, target) < 1e-6
 
 
-def test_iou_at_thresholds_accumulates_chunks(monkeypatch):
-    monkeypatch.setattr("src.train.metrics.CALIBRATION_CHUNK_PIXELS", 3)
-    probability = np.array(
-        [0.1, 0.3, 0.5, 0.7, 0.9, np.nan, 0.5],
-        dtype=np.float32,
-    )
-    target = np.array([0, 1, 1, 0, 1, 0, 0], dtype=np.uint8)
-    thresholds = [0.3, 0.5, 0.7]
-    expected = []
-    for threshold in thresholds:
-        pred = probability >= threshold
-        intersection = np.logical_and(pred, target).sum()
-        union = np.logical_or(pred, target).sum()
-        expected.append(1.0 if union == 0 else intersection / union)
+def test_all_ignored_metrics_are_undefined():
+    result = scores(confusion_matrix(torch.zeros(1, 2, 2, dtype=torch.long), torch.full((1, 2, 2), 255)))
+    assert result["miou"].isnan()
+    assert result["pixel_accuracy"].isnan()
 
-    np.testing.assert_allclose(
-        iou_at_thresholds(probability, target, thresholds),
-        expected,
-        rtol=0,
-        atol=0,
-    )
+
+def test_native_shape_confusion_matches_batched():
+    target = torch.tensor([[0, 1], [2, 3]])
+    assert torch.equal(confusion_matrix(target, target), confusion_matrix(target[None], target[None]))

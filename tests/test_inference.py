@@ -11,21 +11,23 @@ from src.predict.tile import Tile, plan, weigh
 class _ConstantModel(nn.Module):
     def __init__(self, logit: float = 0.0):
         super().__init__()
-        self.logit = nn.Parameter(torch.tensor(logit))
+        self.num_classes = 4
+        self.logit = nn.Parameter(torch.tensor([0., -1., -2., logit]))
 
     def forward(self, x):
-        output = self.logit.expand(x.shape[0], 1, x.shape[2], x.shape[3])
+        output = self.logit[None, :, None, None].expand(x.shape[0], 4, x.shape[2], x.shape[3])
         return Output(logits=[output])
 
 
 class _MeanModel(nn.Module):
     def __init__(self):
         super().__init__()
+        self.num_classes = 4
         self.anchor = nn.Parameter(torch.zeros(()))
 
     def forward(self, x):
         value = x.mean(dim=(1, 2, 3), keepdim=True) + self.anchor
-        output = value.expand(x.shape[0], 1, x.shape[2], x.shape[3])
+        output = value.expand(x.shape[0], 4, x.shape[2], x.shape[3])
         return Output(logits=[output])
 
 
@@ -107,8 +109,8 @@ def test_one_by_one_skips_tile_planner(monkeypatch):
     image = np.zeros((45, 61, 3), dtype=np.uint8)
     logits = predict_logits(model, image, size=32)
 
-    assert logits.shape == image.shape[:2]
-    np.testing.assert_allclose(logits, 1.25, atol=1e-6)
+    assert logits.shape == (4, *image.shape[:2])
+    np.testing.assert_allclose(logits[3], 1.25, atol=1e-6)
 
 
 def test_tile_batch_does_not_change_logits():
@@ -130,8 +132,8 @@ def test_tile_batch_does_not_change_logits():
         overlap=1 / 3,
         tile_batch=3,
     )
-    assert first.shape == image.shape[:2]
-    np.testing.assert_allclose(first, 1.25, atol=1e-6)
+    assert first.shape == (4, *image.shape[:2])
+    np.testing.assert_allclose(first[3], 1.25, atol=1e-6)
     np.testing.assert_allclose(first, second, atol=1e-6)
 
 
@@ -156,46 +158,55 @@ def test_tiles_accept_any_positive_grid():
     model = _ConstantModel(logit=1.25).eval()
     image = np.zeros((17, 23, 3), dtype=np.uint8)
     logits = predict_logits(model, image, size=32, tiles=[4], tile_batch=5)
-    np.testing.assert_allclose(logits, 1.25, atol=1e-6)
+    np.testing.assert_allclose(logits[3], 1.25, atol=1e-6)
 
     with pytest.raises(ValueError, match="positive integers"):
         predict_logits(model, image, size=32, tiles=[0])
 
 
-def test_tiled_binary_requires_threshold_but_probability_does_not():
-    model = _ConstantModel(logit=0.0).eval()
-    image = np.zeros((17, 23, 3), dtype=np.uint8)
-    with pytest.raises(ValueError, match="threshold is required"):
-        predict(model, image, size=32, tiles=[2])
-
-    probability = predict(
-        model,
-        image,
-        output_mode="probability",
-        size=32,
-        tiles=[2],
-    )
-    assert np.all(probability == 128)
-
-
-def test_output_modes_are_explicit_and_restore_original_shape():
-    model = _ConstantModel(logit=0.0).eval()
+def test_labels_and_softmax_preserve_all_classes():
+    model = _ConstantModel(logit=1.25).eval()
     image = np.zeros((17, 43, 3), dtype=np.uint8)
-    binary = predict(
-        model,
-        image,
-        output_mode="binary",
-        threshold=0.5,
-        size=32,
-        overlap=1 / 3,
-    )
-    probability = predict(
-        model,
-        image,
-        output_mode="probability",
-        size=32,
-        overlap=1 / 3,
-    )
-    assert binary.shape == probability.shape == image.shape[:2]
-    assert np.all(binary == 255)
-    assert np.all(probability == 128)
+    labels = predict(model, image, size=32, tiles=[1, 3])
+    assert labels.shape == (17, 43)
+    assert labels.dtype == np.uint8
+    assert np.all(labels == 3)
+    probs = predict(model, image, size=32, tiles=[2], output_mode="probability")
+    assert probs.shape == (4, 17, 43)
+    np.testing.assert_allclose(probs.sum(axis=0), 1., atol=1e-6)
+    selected = predict(model, image, size=32, output_mode="probability", class_id=3)
+    np.testing.assert_array_equal(selected, np.rint(probs[3] * 255).astype(np.uint8))
+
+
+def test_rejects_binary_contract_and_invalid_class():
+    model = _ConstantModel().eval()
+    image = np.zeros((17, 43, 3), dtype=np.uint8)
+    with pytest.raises(TypeError):
+        predict(model, image, threshold=0.5)
+    with pytest.raises(ValueError, match="Unsupported"):
+        predict(model, image, output_mode="binary")
+    for class_id in (-1, 4, True):
+        with pytest.raises(ValueError, match="class_id"):
+            predict(model, image, output_mode="probability", class_id=class_id)
+
+
+class _SpatialModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.num_classes = 4
+        self.anchor = nn.Parameter(torch.zeros(()))
+
+    def forward(self, x):
+        output = torch.cat([x[:, :1], -x[:, :1], x[:, 1:2], -x[:, 1:2]], dim=1)
+        return Output(logits=[output + self.anchor])
+
+
+@pytest.mark.parametrize("tiles", [(1,), (2,), (1, 3)])
+def test_non_square_orientation_survives_restore_and_tiling(tiles):
+    image = np.zeros((31, 65, 3), dtype=np.uint8)
+    image[:, :32, 0] = 255
+    image[:, 32:, 1] = 255
+    logits = predict_logits(_SpatialModel(), image, size=64, tiles=tiles)
+    assert logits.shape == (4, 31, 65)
+    assert np.all(logits.argmax(axis=0)[4:-4, 4:25] == 0)
+    assert np.all(logits.argmax(axis=0)[4:-4, 40:-4] == 2)

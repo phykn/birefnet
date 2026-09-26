@@ -20,6 +20,8 @@ class MaskDataset:
         mode: InputMode = "rgb",
         global_prob: float = 0.3,
         boundary_prob: float = 0.5,
+        num_classes: int = 4,
+        ignore_index: int = 255,
     ) -> None:
         if not 0.0 <= global_prob <= 1.0:
             raise ValueError("global_prob must be in [0, 1]")
@@ -33,6 +35,10 @@ class MaskDataset:
         self.mode = mode
         self.global_prob = float(global_prob)
         self.boundary_prob = float(boundary_prob)
+        if num_classes < 2 or 0 <= ignore_index < num_classes:
+            raise ValueError("num_classes must be >= 2 and ignore_index outside class indices")
+        self.num_classes = int(num_classes)
+        self.ignore_index = int(ignore_index)
 
     @property
     def pairs(self) -> list[Pair]:
@@ -65,10 +71,12 @@ class MaskDataset:
             size=self.size,
             mode="rgb",
         )
-        binary_mask = (mask > 127).astype(np.float32)
+        labels = fit_mask(mask, fit)[0].astype(np.int64)
+        labels[valid[0] == 0] = self.ignore_index
+        valid = valid * (labels[None] != self.ignore_index)
         sample = {
             "weak": weak,
-            "mask": fit_mask(binary_mask, fit),
+            "mask": labels,
             "valid": valid,
             "cut": fit_mask(cut, fit),
         }
@@ -90,6 +98,9 @@ class MaskDataset:
         image_path, mask_path = self.data[index]
         image = read_image(image_path)
         mask = read_mask(mask_path)
+        invalid = (mask != self.ignore_index) & ((mask < 0) | (mask >= self.num_classes))
+        if invalid.any():
+            raise ValueError(f"Mask has invalid class indices {np.unique(mask[invalid]).tolist()}: {mask_path}")
         if image.shape[:2] != mask.shape[:2]:
             raise ValueError(
                 "Image and mask dimensions differ: "

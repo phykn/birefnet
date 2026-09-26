@@ -1,218 +1,85 @@
-from collections.abc import Sequence
-
-import cv2
-import numpy as np
 import torch
-
-CALIBRATION_CHUNK_PIXELS = 1 << 20
-
-
-def brier(
-    logits: torch.Tensor,
-    target: torch.Tensor,
-    valid: torch.Tensor | None = None,
-) -> torch.Tensor:
-    if valid is None:
-        valid = torch.ones_like(target)
-    error = (torch.sigmoid(logits) - target.clamp(0, 1)).square() * valid
-    return error.sum() / valid.sum().clamp_min(1.0)
+import torch.nn.functional as F
 
 
-def ece(
-    logits: torch.Tensor,
-    target: torch.Tensor,
-    valid: torch.Tensor | None = None,
-    bins: int = 10,
-) -> torch.Tensor:
+def _active(target, valid, ignore_index):
+    if target.ndim != 3:
+        raise ValueError("target must have shape B,H,W")
+    active = target != ignore_index
+    if valid is not None:
+        if valid.shape != target[:, None].shape:
+            raise ValueError("valid must have shape B,1,H,W")
+        active = active & (valid[:, 0] > 0.5)
+    return active
+
+
+def confusion_matrix(prediction, target, valid=None, num_classes=4, ignore_index=255):
+    """Rows are true classes; columns are predicted classes. Padding is excluded."""
+    if target.ndim == 2:
+        target = target[None]
+        if prediction.ndim == 2:
+            prediction = prediction[None]
+        elif prediction.ndim == 3:
+            prediction = prediction[None]
+        if valid is not None:
+            valid = valid.reshape(1, 1, *target.shape[-2:])
+    if prediction.ndim == 4:
+        if prediction.shape[1] != num_classes:
+            raise ValueError("logit channel count differs from num_classes")
+        prediction = prediction.argmax(1)
+    if prediction.shape != target.shape:
+        raise ValueError("prediction and target shapes must match")
+    active = _active(target, valid, ignore_index)
+    truth, pred = target[active].long(), prediction[active].long()
+    if ((truth < 0) | (truth >= num_classes) | (pred < 0) | (pred >= num_classes)).any():
+        raise ValueError("invalid class index in active metric pixels")
+    counts = torch.bincount(truth * num_classes + pred, minlength=num_classes ** 2)
+    return counts.reshape(num_classes, num_classes)
+
+
+def scores(confusion):
+    """Undefined class ratios are NaN; macro means exclude undefined classes."""
+    matrix = confusion.to(torch.float64)
+    true = matrix.sum(1)
+    pred = matrix.sum(0)
+    hit = matrix.diag()
+    nan = torch.full_like(hit, float("nan"))
+    union = true + pred - hit
+    iou = torch.where(union > 0, hit / union.clamp_min(1), nan)
+    dice = torch.where(true + pred > 0, 2 * hit / (true + pred).clamp_min(1), nan)
+    recall = torch.where(true > 0, hit / true.clamp_min(1), nan)
+    return {"per_class_iou": iou, "per_class_dice": dice, "per_class_recall": recall,
+            "miou": iou.nanmean(), "mdice": dice.nanmean(), "mean_recall": recall.nanmean(),
+            "pixel_accuracy": hit.sum() / matrix.sum() if matrix.sum() > 0 else matrix.new_tensor(float("nan"))}
+
+
+def iou_logits(logits, target, valid=None, ignore_index=255):
+    return scores(confusion_matrix(logits, target, valid, logits.shape[1], ignore_index))["miou"]
+
+
+def dice(logits, target, valid=None, ignore_index=255):
+    return scores(confusion_matrix(logits, target, valid, logits.shape[1], ignore_index))["mdice"]
+
+
+def brier(logits, target, valid=None, ignore_index=255):
+    active = _active(target, valid, ignore_index)
+    truth = F.one_hot(target.masked_fill(~active, 0).long(), logits.shape[1]).permute(0, 3, 1, 2)
+    error = (logits.softmax(1) - truth).square().sum(1)
+    return (error * active).sum() / active.sum().clamp_min(1)
+
+
+def ece(logits, target, valid=None, bins=10, ignore_index=255):
     if bins <= 0:
         raise ValueError("bins must be positive")
-    if valid is None:
-        valid = torch.ones_like(target)
-    active = valid > 0.5
-    probability = torch.sigmoid(logits)[active]
-    labels = target[active].clamp(0, 1)
-    if probability.numel() == 0:
-        return logits.sum() * 0.0
-
-    ece = probability.new_zeros(())
-    edges = torch.linspace(0.0, 1.0, bins + 1, device=probability.device)
+    active = _active(target, valid, ignore_index)
+    confidence, prediction = logits.softmax(1).max(1)
+    confidence = confidence[active]
+    correct = (prediction[active] == target[active]).to(logits.dtype)
+    result = logits.sum() * 0.0
+    if confidence.numel() == 0:
+        return result
     for index in range(bins):
-        upper = (
-            probability <= edges[index + 1]
-            if index == bins - 1
-            else probability < edges[index + 1]
-        )
-        in_bin = (probability >= edges[index]) & upper
-        count = in_bin.sum()
-        if count > 0:
-            confidence = probability[in_bin].mean()
-            accuracy = labels[in_bin].mean()
-            ece = ece + count / probability.numel() * (confidence - accuracy).abs()
-    return ece
-
-
-def iou(
-    probability: torch.Tensor,
-    target: torch.Tensor,
-    valid: torch.Tensor | None = None,
-    threshold: float = 0.5,
-) -> torch.Tensor:
-    if valid is None:
-        valid = torch.ones_like(target)
-    pred = (probability >= threshold).to(target.dtype) * valid
-    target = (target > 0.5).to(target.dtype) * valid
-    dims = tuple(range(1, pred.ndim))
-    intersection = (pred * target).sum(dim=dims)
-    union = pred.sum(dim=dims) + target.sum(dim=dims) - intersection
-    scores = torch.where(
-        union == 0,
-        torch.ones_like(union),
-        intersection / union.clamp_min(1.0),
-    )
-    return scores.mean()
-
-
-def iou_at_thresholds(
-    probability: np.ndarray,
-    target: np.ndarray,
-    thresholds: Sequence[float],
-) -> np.ndarray:
-    probability = np.asarray(probability)
-    target = np.asarray(target)
-    if probability.shape != target.shape:
-        raise ValueError("probability and target shapes must match")
-
-    dtype = probability.dtype if np.issubdtype(probability.dtype, np.floating) else None
-    values = np.asarray(tuple(thresholds), dtype=dtype)
-    if values.ndim != 1 or values.size == 0:
-        raise ValueError("thresholds must be a non-empty sequence")
-    if not np.all(np.isfinite(values)) or np.any(np.diff(values) < 0):
-        raise ValueError("thresholds must be finite and sorted")
-
-    bins = values.size + 1
-    pred_bins = np.zeros(bins, dtype=np.int64)
-    target_bins = np.zeros(bins, dtype=np.int64)
-    target_count = 0
-    flat = probability.reshape(-1)
-    target_flat = target.reshape(-1)
-    for start in range(0, flat.size, CALIBRATION_CHUNK_PIXELS):
-        stop = start + CALIBRATION_CHUNK_PIXELS
-        chunk = flat[start:stop]
-        positions = np.searchsorted(values, chunk, side="right")
-        if np.issubdtype(probability.dtype, np.floating):
-            positions[np.isnan(chunk)] = 0
-        active = target_flat[start:stop].astype(bool, copy=False)
-        pred_bins += np.bincount(positions, minlength=bins)
-        target_bins += np.bincount(positions[active], minlength=bins)
-        target_count += int(active.sum())
-
-    pred_count = np.cumsum(pred_bins[::-1], dtype=np.int64)[::-1][1:]
-    intersection = np.cumsum(target_bins[::-1], dtype=np.int64)[::-1][1:]
-    union = pred_count + target_count - intersection
-    return np.divide(
-        intersection,
-        union,
-        out=np.ones(values.size, dtype=np.float64),
-        where=union != 0,
-    )
-
-
-def iou_logits(
-    logits: torch.Tensor,
-    target: torch.Tensor,
-    valid: torch.Tensor | None = None,
-    threshold: float = 0.5,
-) -> torch.Tensor:
-    return iou(torch.sigmoid(logits), target, valid, threshold)
-
-
-def dice(
-    logits: torch.Tensor,
-    target: torch.Tensor,
-    valid: torch.Tensor | None = None,
-    threshold: float = 0.5,
-) -> torch.Tensor:
-    if valid is None:
-        valid = torch.ones_like(target)
-    pred = (torch.sigmoid(logits) >= threshold).to(target.dtype) * valid
-    target = (target > 0.5).to(target.dtype) * valid
-    dims = tuple(range(1, pred.ndim))
-    intersection = (pred * target).sum(dim=dims)
-    total = pred.sum(dim=dims) + target.sum(dim=dims)
-    scores = torch.where(
-        total == 0,
-        torch.ones_like(total),
-        2.0 * intersection / total.clamp_min(1.0),
-    )
-    return scores.mean()
-
-
-def _find_edge(mask: np.ndarray) -> np.ndarray:
-    binary = (mask > 0).astype(np.uint8)
-    kernel = np.ones((3, 3), dtype=np.uint8)
-    eroded = cv2.erode(
-        binary,
-        kernel,
-        iterations=1,
-        borderType=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-    return binary - eroded
-
-
-def boundary(
-    prediction: np.ndarray,
-    target: np.ndarray,
-    tolerance_px: float = 2.0,
-) -> float:
-    pred_boundary = _find_edge(prediction)
-    target_boundary = _find_edge(target)
-    pred_count = int(pred_boundary.sum())
-    target_count = int(target_boundary.sum())
-    if pred_count == 0 and target_count == 0:
-        return 1.0
-    if pred_count == 0 or target_count == 0:
-        return 0.0
-
-    distance_to_target = cv2.distanceTransform(
-        1 - target_boundary, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
-    )
-    distance_to_pred = cv2.distanceTransform(
-        1 - pred_boundary, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
-    )
-    precision = (
-        float(
-            np.logical_and(pred_boundary > 0, distance_to_target <= tolerance_px).sum()
-        )
-        / pred_count
-    )
-    recall = (
-        float(
-            np.logical_and(target_boundary > 0, distance_to_pred <= tolerance_px).sum()
-        )
-        / target_count
-    )
-    if precision + recall == 0:
-        return 0.0
-    return 2.0 * precision * recall / (precision + recall)
-
-
-def boundary_logits(
-    logits: torch.Tensor,
-    target: torch.Tensor,
-    valid: torch.Tensor | None = None,
-    threshold: float = 0.5,
-    tolerance_px: float = 2.0,
-) -> float:
-    if valid is None:
-        valid = torch.ones_like(target)
-    pred = ((torch.sigmoid(logits) >= threshold) * (valid > 0.5)).cpu().numpy()
-    gt = ((target > 0.5) * (valid > 0.5)).cpu().numpy()
-    return float(
-        np.mean(
-            [
-                boundary(p[0], t[0], tolerance_px=tolerance_px)
-                for p, t in zip(pred, gt)
-            ]
-        )
-    )
+        in_bin = (confidence >= index / bins) & (confidence <= (index + 1) / bins if index == bins - 1 else confidence < (index + 1) / bins)
+        if in_bin.any():
+            result = result + in_bin.float().mean() * (confidence[in_bin].mean() - correct[in_bin].mean()).abs()
+    return result

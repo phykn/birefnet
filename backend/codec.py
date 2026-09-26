@@ -33,13 +33,24 @@ def decode(text: str) -> np.ndarray:
     if width * height > MAX_PIXELS:
         raise ImageLimitError("image dimensions are too large")
 
-    image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    image = cv2.imdecode(
+        np.frombuffer(raw, dtype=np.uint8),
+        cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION,
+    )
     if image is None:
         raise ValueError("invalid image")
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
-def encode(mask: np.ndarray) -> str:
+def encode(mask: np.ndarray, indexed: bool = False) -> str:
+    if indexed:
+        image = Image.fromarray(mask)
+        palette = np.repeat(np.arange(256, dtype=np.uint8), 3).tolist()
+        palette[:12] = [24, 32, 48, 174, 187, 199, 239, 89, 79, 64, 184, 220]
+        image.putpalette(palette)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return base64.b64encode(output.getvalue()).decode("ascii")
     ok, raw = cv2.imencode(".png", mask)
     if not ok:
         raise RuntimeError("Failed to encode prediction")

@@ -1,19 +1,5 @@
 birefnet:
   weight: "weight/BiRefNet-general-epoch_244.pth"
   channels: [1536, 768, 384, 192]
+  num_classes: 4
   grad_checkpoint: True
-
-lora:
-  rank: 8
-  alpha: 16.0
-  trainable_heads:
-    - decoder.conv_out1.0
-    - decoder.conv_ms_spvn_2
-    - decoder.conv_ms_spvn_3
-    - decoder.conv_ms_spvn_4
-    - decoder.gdt_convs_pred_2.0
-    - decoder.gdt_convs_pred_3.0
-    - decoder.gdt_convs_pred_4.0
-    - decoder.gdt_convs_attn_2.0
-    - decoder.gdt_convs_attn_3.0
-    - decoder.gdt_convs_attn_4.0

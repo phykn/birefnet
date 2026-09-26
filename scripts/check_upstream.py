@@ -42,7 +42,8 @@ def main() -> None:
     state = torch.load(args.weights, map_location="cpu", weights_only=True)
     with torch.device("meta"):
         upstream = UpstreamBiRefNet(bb_pretrained=False)
-        local = BiRefNet()
+        local = BiRefNet(num_classes=1)
+        local.configure_finetune("full")
     for model in (upstream, local):
         model.load_state_dict(state, strict=True, assign=True)
         model.to(args.device)
@@ -57,7 +58,7 @@ def main() -> None:
         ]:
             for model in (upstream, local):
                 model.train(training)
-                # LoRA training keeps pretrained BatchNorm statistics frozen.
+                # Use the same BatchNorm statistics for both implementations.
                 for module in model.modules():
                     if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
                         module.eval()
@@ -67,6 +68,7 @@ def main() -> None:
             expected = upstream(x)
             torch.manual_seed(11)
             actual = local(x)
+            actual = [[list(actual.gdt), actual.logits], [None]] if training else actual.logits
             error = compare(actual, expected)
             print(
                 f"{'train' if training else 'eval'} {shape}: "

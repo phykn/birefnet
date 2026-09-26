@@ -21,16 +21,16 @@ class Trainer:
         model: nn.Module,
         train_loader: DataLoader,
         valid_loader: DataLoader,
-        calib_loader: DataLoader,
         criterion: nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: CosineSchedule,
-        teacher: Teacher,
+        teacher: Teacher | None,
         save_dir: str,
         predictor: Callable[..., np.ndarray],
         max_grad_norm: float = 1.0,
         accum_steps: int = 1,
         preprocess: PreprocessSpec | None = None,
+        ignore_index: int = 255,
     ) -> None:
         if max_grad_norm <= 0:
             raise ValueError("max_grad_norm must be positive")
@@ -44,7 +44,6 @@ class Trainer:
         self.model = model
         self.train_loader = train_loader
         self.valid_loader = valid_loader
-        self.calib_loader = calib_loader
         self.criterion = criterion
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -61,8 +60,7 @@ class Trainer:
         self.device = next(model.parameters()).device
         self.global_step = 0
         self.best_region = float("-inf")
-        self.best_boundary = float("-inf")
-        self.calib_threshold = 0.5
+        self.ignore_index = ignore_index
 
         self.use_amp = self.device.type == "cuda"
         if self.use_amp and torch.cuda.is_bf16_supported(including_emulation=False):
@@ -86,13 +84,13 @@ class Trainer:
         return Validator(
             model=self.model,
             valid_loader=self.valid_loader,
-            calib_loader=self.calib_loader,
             criterion=self.criterion,
             device=self.device,
             amp_dtype=self.amp_dtype,
             use_amp=self.use_amp,
             preprocess=self.preprocess,
             predictor=self.predictor,
+            ignore_index=self.ignore_index,
         )
 
     def validate(self) -> dict[str, float]:
@@ -101,13 +99,8 @@ class Trainer:
     def predict_native(self, loader: DataLoader):
         return self._make_validator().predict_native(loader)
 
-    def calibrate(self) -> float:
-        threshold = self._make_validator().calibrate()
-        self.calib_threshold = threshold
-        return threshold
-
-    def validate_deploy(self, threshold: float) -> dict[str, float]:
-        return self._make_validator().validate_deploy(threshold)
+    def validate_deploy(self) -> dict[str, float]:
+        return self._make_validator().validate_deploy()
 
     def _make_checkpoint_store(self) -> CheckpointStore:
         return CheckpointStore(
@@ -118,25 +111,17 @@ class Trainer:
             teacher=self.teacher,
             save_dir=self.save_dir,
             preprocess=self.preprocess,
-            global_step=self.global_step,
-            best_region=self.best_region,
-            best_boundary=self.best_boundary,
-            calib_threshold=self.calib_threshold,
+            ignore_index=self.ignore_index,
         )
 
     def save(self) -> None:
-        self._make_checkpoint_store().save()
+        self._make_checkpoint_store().save(self.global_step, self.best_region)
 
     def save_best(self, name: str, metrics: dict[str, float]) -> None:
-        self._make_checkpoint_store().save_best(name, metrics)
+        self._make_checkpoint_store().save_best(name, metrics, self.global_step)
 
     def load_resume(self, path: str) -> None:
-        store = self._make_checkpoint_store()
-        store.load_resume(path)
-        self.global_step = store.global_step
-        self.best_region = store.best_region
-        self.best_boundary = store.best_boundary
-        self.calib_threshold = store.calib_threshold
+        self.global_step, self.best_region = self._make_checkpoint_store().load_resume(path)
         self._train_iter = None
 
     def next_batch(self) -> dict[str, torch.Tensor]:
@@ -153,7 +138,7 @@ class Trainer:
             self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         accum: dict[str, float] = {}
-        teacher_scale = self.teacher.scale(self.global_step + 1)
+        teacher_scale = self.teacher.scale(self.global_step + 1) if self.teacher is not None else 0.0
         for _ in range(self.accum_steps):
             batch = self.move(self.next_batch())
             with torch.amp.autocast(
@@ -197,7 +182,8 @@ class Trainer:
         self.scaler.update()
         updated = self.scaler.get_scale() >= old_scale
         if updated:
-            self.teacher.update(self.model)
+            if self.teacher is not None:
+                self.teacher.update(self.model)
             self.scheduler.step()
             self.global_step += 1
         accum["grad_norm"] = float(grad_norm)
@@ -207,23 +193,14 @@ class Trainer:
         if self._writer is None:
             raise RuntimeError("Validation logging requires an active writer")
 
-        threshold = self.calibrate()
         valid_metrics = self.validate()
-        valid_metrics.update(self.validate_deploy(threshold))
+        valid_metrics.update(self.validate_deploy())
         for key, value in valid_metrics.items():
             self._writer.add_scalar(f"valid/{key}", value, self.global_step)
-        self._writer.add_scalar("valid/threshold", threshold, self.global_step)
-
-        region_improved = valid_metrics["deploy_region_iou"] > self.best_region
-        boundary_improved = (
-            valid_metrics["deploy_boundary_f1"] > self.best_boundary
-        )
-        if region_improved:
-            self.best_region = valid_metrics["deploy_region_iou"]
-            self.save_best("region", valid_metrics)
-        if boundary_improved:
-            self.best_boundary = valid_metrics["deploy_boundary_f1"]
-            self.save_best("boundary", valid_metrics)
+        score = valid_metrics["deploy_miou"]
+        if score > self.best_region:
+            self.best_region = score
+            self.save_best("miou", valid_metrics)
 
     def train(
         self,

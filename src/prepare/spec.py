@@ -30,11 +30,11 @@ class PreprocessSpec:
             return cls()
         value = meta["preprocess"]
         if not isinstance(value, dict):
-            raise RuntimeError("Overlay preprocess metadata must be a mapping")
+            raise RuntimeError("Checkpoint preprocess metadata must be a mapping")
         try:
             return cls(
                 size=value["size"],
                 mode=value["mode"],
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError("Invalid overlay preprocess metadata") from exc
+            raise RuntimeError("Invalid checkpoint preprocess metadata") from exc

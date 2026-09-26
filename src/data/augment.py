@@ -31,12 +31,9 @@ def crop(
     crop_h = min(size, height)
     crop_w = min(size, width)
     if random.random() < boundary_prob:
-        binary = (mask > 127).astype(np.uint8)
-        boundary = cv2.morphologyEx(
-            binary,
-            cv2.MORPH_GRADIENT,
-            np.ones((3, 3), dtype=np.uint8),
-        )
+        labels = mask.astype(np.float32)
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        boundary = cv2.dilate(labels, kernel) != cv2.erode(labels, kernel)
         ys, xs = np.nonzero(boundary)
     else:
         ys = xs = np.empty(0, dtype=np.int64)

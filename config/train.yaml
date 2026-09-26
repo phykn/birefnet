@@ -1,9 +1,9 @@
 data:
-  image_dir: "local_data/image"
-  mask_dir: "local_data/mask"
+  image_dir: "data/image"
+  mask_dir: "data/mask"
   size: 1024
   valid_ratio: 0.1
-  calib_ratio: 0.1
+  ignore_index: 255
   mode: rgb
   global_prob: 0.3
   boundary_prob: 0.5
@@ -24,11 +24,13 @@ loader:
   prefetch_factor: 2
 
 train:
+  mode: decoder
+  backbone_stages: 1
+  freeze_bn: true
   max_lr: 1.0e-4
   min_lr: 1.0e-7
-  head_lr_scale: 0.5
+  backbone_lr_scale: 0.1
   weight_decay: 0.01
-  head_weight_decay: 0.0
   warmup_steps: 50
   max_grad_norm: 1.0
   accum_steps: 1
@@ -37,7 +39,6 @@ train:
   save_freq: 100
 
 loss:
-  gce_q: 0.7
   lambda_cls: 1.0
   region_loss: dice
   lambda_region: 1.0
@@ -46,6 +47,7 @@ loss:
   lambda_aux: 1.0
 
 teacher:
+  enabled: false
   decay: 0.99
   start: 100
   ramp: 100

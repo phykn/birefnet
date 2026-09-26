@@ -2,53 +2,34 @@ from typing import Any
 
 import torch
 
-from ..adapt.fuse import fuse
-from ..adapt.wrap import LoRABiRefNet
 from ..model import BiRefNet
+from ..model.checkpoint import load_base, read_checkpoint
 
 
-def build(cfg: Any) -> BiRefNet:
-    path = str(cfg.birefnet.weight) if cfg.birefnet.weight else None
+def build(cfg: Any, load_pretrained: bool = True) -> BiRefNet:
     model = BiRefNet(
-        channels=cfg.birefnet.channels,
+        channels=list(cfg.birefnet.channels),
         grad_checkpoint=cfg.birefnet.grad_checkpoint,
+        num_classes=cfg.birefnet.get("num_classes", 4),
     )
-    if path:
+    path = str(cfg.birefnet.weight) if cfg.birefnet.get("weight") else None
+    if load_pretrained and path:
         state = torch.load(path, map_location="cpu", weights_only=True)
-        if not isinstance(state, dict) or not all(
-            isinstance(value, torch.Tensor) for value in state.values()
-        ):
-            raise RuntimeError("Base checkpoint must be a flat tensor state_dict")
-        model.load_state_dict(state, strict=True)
+        load_base(model, state)
         print(f"[LOAD] {path}")
-
+    train = cfg.get("train", {})
+    model.configure_finetune(
+        mode=train.get("mode", "decoder"),
+        backbone_stages=train.get("backbone_stages", 1),
+        freeze_bn=train.get("freeze_bn", True),
+    )
     return model
 
 
-def adapt(cfg: Any, model: torch.nn.Module) -> LoRABiRefNet:
-    device = next(model.parameters()).device
-    wrapped = LoRABiRefNet(
-        model=model,
-        rank=cfg.lora.rank,
-        alpha=cfg.lora.alpha,
-        trainable_heads=list(cfg.lora.get("trainable_heads", [])),
-    )
-    return wrapped.to(device)
-
-
-def load(
-    cfg: Any,
-    model: torch.nn.Module,
-    path: str,
-) -> LoRABiRefNet:
-    wrapped = adapt(cfg, model)
-    wrapped.load_overlay(path)
-    print(f"[LOAD] {path}")
-    return wrapped
-
-
-def build_predictor(cfg: Any, path: str, device: torch.device) -> LoRABiRefNet:
-    base = build(cfg).to(device)
-    model = load(cfg, base, path)
-    model.eval()
-    return fuse(model)
+def build_predictor(cfg: Any, path: str, device: torch.device) -> BiRefNet:
+    num_classes = cfg.birefnet.get("num_classes", 4)
+    checkpoint = read_checkpoint(path, num_classes)
+    model = build(cfg, load_pretrained=False)
+    model.load_state_dict(checkpoint["model"], strict=True)
+    model.loaded_meta = {key: value for key, value in checkpoint.items() if key != "model"}
+    return model.to(device).eval()

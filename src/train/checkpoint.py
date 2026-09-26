@@ -1,28 +1,15 @@
 from pathlib import Path
 from typing import Any
 
-import torch
-
+from ..model.checkpoint import pack_model, read_checkpoint
 from ..prepare.spec import PreprocessSpec
 from ..storage import atomic_torch_save
 
 
 class CheckpointStore:
-    def __init__(
-        self,
-        *,
-        model: Any,
-        optimizer: torch.optim.Optimizer,
-        scheduler: Any,
-        scaler: Any,
-        teacher: Any,
-        save_dir: str,
-        preprocess: PreprocessSpec,
-        global_step: int,
-        best_region: float,
-        best_boundary: float,
-        calib_threshold: float,
-    ) -> None:
+    def __init__(self, *, model: Any, optimizer: Any, scheduler: Any,
+                 scaler: Any, teacher: Any, save_dir: str,
+                 preprocess: PreprocessSpec, ignore_index: int = 255) -> None:
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -30,65 +17,44 @@ class CheckpointStore:
         self.teacher = teacher
         self.save_dir = save_dir
         self.preprocess = preprocess
-        self.global_step = global_step
-        self.best_region = best_region
-        self.best_boundary = best_boundary
-        self.calib_threshold = calib_threshold
+        self.ignore_index = ignore_index
 
-    def _overlay_extra(
-        self,
-        extra: dict | None = None,
-    ) -> dict:
-        value = {"preprocess": self.preprocess.to_meta()}
-        if extra:
-            value.update(extra)
-        return value
-
-    def save(self) -> None:
-        weights_dir = Path(self.save_dir) / "weights"
-        weights_dir.mkdir(parents=True, exist_ok=True)
-        overlay = self.model.make_overlay(self._overlay_extra())
-        atomic_torch_save(overlay, weights_dir / "last.overlay.pth")
-        training_state = {
-            "overlay": overlay,
-            "optimizer": self.optimizer.state_dict(),
-            "scheduler": self.scheduler.state_dict(),
-            "scaler": self.scaler.state_dict(),
-            "teacher": self.teacher.state_dict(),
-            "global_step": self.global_step,
-            "best_region": self.best_region,
-            "best_boundary": self.best_boundary,
-            "threshold": self.calib_threshold,
-        }
-        atomic_torch_save(training_state, weights_dir / "last.train.pth")
-
-    def save_best(self, name: str, metrics: dict[str, float]) -> None:
-        weights_dir = Path(self.save_dir) / "weights"
-        extra = self._overlay_extra(
-            {
-                "selection": {
-                    "name": name,
-                    "global_step": self.global_step,
-                    "metrics": metrics,
-                    "threshold": self.calib_threshold,
-                },
-            }
+    def save(self, global_step: int, best_region: float) -> None:
+        root = Path(self.save_dir) / "weights"
+        root.mkdir(parents=True, exist_ok=True)
+        payload = pack_model(self.model, self.preprocess, self.ignore_index)
+        atomic_torch_save(payload, root / "last.pth")
+        payload.update(
+            optimizer=self.optimizer.state_dict(),
+            scheduler=self.scheduler.state_dict(),
+            scaler=self.scaler.state_dict(),
+            teacher=self.teacher.state_dict() if self.teacher is not None else None,
+            global_step=global_step, best_region=best_region,
         )
-        self.model.save_overlay(
-            str(weights_dir / f"best_{name}.overlay.pth"),
-            extra=extra,
-        )
+        atomic_torch_save(payload, root / "last.train.pth")
 
-    def load_resume(self, path: str) -> None:
-        state = torch.load(path, map_location="cpu", weights_only=True)
-        if not isinstance(state, dict) or "overlay" not in state:
-            raise RuntimeError("Unsupported training checkpoint format")
-        self.model.load_payload(state["overlay"])
+    def save_best(self, name: str, metrics: dict[str, float], global_step: int) -> None:
+        root = Path(self.save_dir) / "weights"
+        root.mkdir(parents=True, exist_ok=True)
+        payload = pack_model(self.model, self.preprocess, self.ignore_index)
+        payload["selection"] = {"name": name, "global_step": global_step,
+                                "metrics": metrics}
+        atomic_torch_save(payload, root / f"best_{name}.pth")
+
+    def load_resume(self, path: str) -> tuple[int, float]:
+        state = read_checkpoint(path, self.model.num_classes)
+        if "optimizer" not in state:
+            raise RuntimeError("Unsupported training checkpoint format; LoRA overlays cannot be resumed")
+        if state.get("ignore_index", 255) != self.ignore_index:
+            raise RuntimeError("Checkpoint ignore_index differs from configuration")
+        if PreprocessSpec.from_meta(state) != self.preprocess:
+            raise RuntimeError("Checkpoint preprocess differs from configuration")
+        if (state["teacher"] is None) != (self.teacher is None):
+            raise RuntimeError("Checkpoint teacher configuration differs")
+        self.model.load_state_dict(state["model"], strict=True)
         self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         self.scaler.load_state_dict(state["scaler"])
-        self.teacher.load_state_dict(state["teacher"])
-        self.global_step = int(state["global_step"])
-        self.best_region = float(state["best_region"])
-        self.best_boundary = float(state["best_boundary"])
-        self.calib_threshold = float(state["threshold"])
+        if self.teacher is not None:
+            self.teacher.load_state_dict(state["teacher"])
+        return int(state["global_step"]), float(state["best_region"])

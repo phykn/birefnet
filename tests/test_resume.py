@@ -21,8 +21,6 @@ def _make_run(tmp_path):
         "train_mask": ["train.png"],
         "valid_image": ["valid.png"],
         "valid_mask": ["valid.png"],
-        "calib_image": ["calib.png"],
-        "calib_mask": ["calib.png"],
     }
     save_splits(splits, run_dir)
     return run_dir, checkpoint, splits
@@ -58,6 +56,7 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
     calls = {}
 
     class Base:
+        stats = {"total": 10, "trainable": 2}
         def to(self, device):
             return self
 
@@ -78,13 +77,12 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
         "parse_args",
         lambda: Namespace(resume=str(checkpoint), config=None),
     )
-    monkeypatch.setattr(run_train, "build_model", lambda actual: Base())
-    monkeypatch.setattr(run_train, "adapt", lambda actual, base: Model())
+    monkeypatch.setattr(run_train, "build_model", lambda actual, load_pretrained: Base())
 
     def build_data(actual, saved):
         calls["config"] = actual
         calls["splits"] = saved
-        return "train", "valid", "calib", splits
+        return "train", "valid", splits
 
     def build_trainer(**kwargs):
         calls["save_dir"] = kwargs["save_dir"]

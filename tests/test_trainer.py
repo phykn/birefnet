@@ -18,7 +18,8 @@ from src.train.teacher import Teacher
 class _DummyModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv = nn.Conv2d(3, 1, 1)
+        self.num_classes = 4
+        self.conv = nn.Conv2d(3, 4, 1)
         self.calls = 0
 
     def forward(self, x):
@@ -31,22 +32,6 @@ class _DummyModel(nn.Module):
     def list_trainable(self):
         return list(self.parameters())
 
-    def make_overlay(self, extra=None):
-        return {
-            "meta": extra or {},
-            "state": {
-                key: value.detach().cpu() for key, value in self.state_dict().items()
-            },
-        }
-
-    def load_payload(self, payload):
-        self.load_state_dict(payload["state"])
-        return payload["meta"]
-
-    def save_overlay(self, path, extra=None):
-        payload = self.make_overlay(extra)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(payload, path)
 
 
 class _DummyCriterion(nn.Module):
@@ -74,7 +59,7 @@ class _DummyDataset(Dataset):
         return {
             "weak": torch.randn(3, 8, 8),
             "strong": torch.randn(3, 8, 8),
-            "mask": torch.randint(0, 2, (1, 8, 8)).float(),
+            "mask": torch.randint(0, 4, (8, 8)),
             "valid": torch.ones(1, 8, 8),
         }
 
@@ -97,7 +82,6 @@ def _make_trainer(tmp_path, accum_steps=1, preprocess=None):
         model=model,
         train_loader=train_loader,
         valid_loader=valid_loader,
-        calib_loader=valid_loader,
         criterion=criterion,
         optimizer=optimizer,
         scheduler=scheduler,
@@ -147,40 +131,63 @@ def test_trainer_get_batch_wraps_around(tmp_path):
         assert "weak" in batch
 
 
-def test_trainer_save_writes_overlay_and_resume_state(tmp_path):
+def test_trainer_save_writes_full_model_and_resume_state(tmp_path):
     trainer = _make_trainer(
         tmp_path,
         preprocess=PreprocessSpec(size=640, mode="gray_repeat"),
     )
     trainer.save()
     weights_dir = os.path.join(trainer.save_dir, "weights")
-    overlay_path = os.path.join(weights_dir, "last.overlay.pth")
+    overlay_path = os.path.join(weights_dir, "last.pth")
     assert os.path.exists(overlay_path)
     assert os.path.exists(os.path.join(weights_dir, "last.train.pth"))
     overlay = torch.load(overlay_path, map_location="cpu", weights_only=True)
-    assert overlay["meta"]["preprocess"] == {
+    assert overlay["preprocess"] == {
         "size": 640,
         "mode": "gray_repeat",
     }
 
 
 def test_trainer_resume_restores_step_model_optimizer_and_scheduler(tmp_path):
-    trainer = _make_trainer(tmp_path)
+    preprocess = PreprocessSpec(size=64, mode="gray_repeat")
+    trainer = _make_trainer(tmp_path, preprocess=preprocess)
     _, updated = trainer.step()
     assert updated
     expected_weight = trainer.model.conv.weight.detach().clone()
     expected_teacher = trainer.teacher.state_dict()
     expected_lr = trainer.optimizer.param_groups[0]["lr"]
+    trainer.best_region = 0.6
     trainer.save()
 
-    resumed = _make_trainer(tmp_path)
+    resumed = _make_trainer(tmp_path, preprocess=preprocess)
     resumed.load_resume(os.path.join(tmp_path, "weights", "last.train.pth"))
     assert resumed.global_step == trainer.global_step
+    assert resumed.best_region == trainer.best_region
     assert torch.allclose(resumed.model.conv.weight, expected_weight)
     assert resumed.optimizer.param_groups[0]["lr"] == expected_lr
     assert resumed.scheduler.step_in_cycle == trainer.scheduler.step_in_cycle
     for name, value in expected_teacher.items():
         assert torch.allclose(resumed.teacher.state_dict()[name], value)
+
+
+@pytest.mark.parametrize(
+    "preprocess",
+    [PreprocessSpec(size=64), PreprocessSpec(mode="gray_repeat")],
+)
+def test_resume_rejects_preprocess_mismatch_before_loading_weights(tmp_path, preprocess):
+    trainer = _make_trainer(tmp_path)
+    trainer.step()
+    trainer.save()
+    resumed = _make_trainer(tmp_path, preprocess=preprocess)
+    before = {name: value.clone() for name, value in resumed.model.state_dict().items()}
+
+    with pytest.raises(RuntimeError, match="preprocess"):
+        resumed.load_resume(str(tmp_path / "weights" / "last.train.pth"))
+
+    assert resumed.global_step == 0
+    assert not resumed.optimizer.state
+    for name, value in resumed.model.state_dict().items():
+        assert torch.equal(value, before[name])
 
 
 class _SkipScaler:
@@ -268,61 +275,30 @@ def test_training_rejects_non_finite_loss(tmp_path):
         trainer.step()
 
 
-def test_best_selection_uses_calibrated_deployment_threshold(tmp_path):
+def test_best_selection_uses_multiclass_deployment_miou(tmp_path):
     trainer = _make_trainer(tmp_path)
-    calls = []
-
-    def calibrate():
-        calls.append("calibrate")
-        trainer.calib_threshold = 0.63
-        return 0.63
-
-    def validate():
-        calls.append("validate")
-        return {"loss": 0.0}
-
-    def validate_deploy(threshold):
-        calls.append(("deploy", threshold))
-        return {
-            "deploy_region_iou": 0.8,
-            "deploy_dice": 0.85,
-            "deploy_boundary_f1": 0.7,
-        }
-
-    trainer.calibrate = calibrate
-    trainer.validate = validate
-    trainer.validate_deploy = validate_deploy
+    trainer.validate = lambda: {"loss": 0.0}
+    trainer.validate_deploy = lambda: {"deploy_miou": 0.8, "deploy_mdice": 0.85}
     trainer.train(steps=1, val_freq=1, save_freq=10)
-
-    assert calls == ["calibrate", "validate", ("deploy", 0.63)]
-    payload = torch.load(
-        tmp_path / "weights" / "best_boundary.overlay.pth",
-        map_location="cpu",
-        weights_only=True,
-    )
-    assert payload["meta"]["selection"]["threshold"] == 0.63
+    state = torch.load(tmp_path / "weights" / "best_miou.pth", weights_only=True)
+    assert state["num_classes"] == 4
+    assert state["selection"]["metrics"]["deploy_miou"] == 0.8
 
 
-def test_calibration_and_deployment_validation_use_native_inference(tmp_path):
+def test_deployment_validation_preserves_class_three(tmp_path):
     image_path = tmp_path / "image.png"
     mask_path = tmp_path / "mask.png"
     Image.fromarray(np.zeros((8, 12, 3), dtype=np.uint8)).save(image_path)
-    Image.fromarray(np.full((8, 12), 255, dtype=np.uint8)).save(mask_path)
-
-    trainer = _make_trainer(tmp_path)
+    Image.fromarray(np.full((8, 12), 3, dtype=np.uint8)).save(mask_path)
+    trainer = _make_trainer(tmp_path, preprocess=PreprocessSpec(size=32))
     trainer.valid_loader.dataset.data = [(str(image_path), str(mask_path))]
     with torch.no_grad():
         trainer.model.conv.weight.zero_()
-        trainer.model.conv.bias.fill_(20.0)
-
-    threshold = trainer.calibrate()
-    metrics = trainer.validate_deploy(threshold)
-    assert threshold == 0.5
-    assert metrics == {
-        "deploy_region_iou": 1.0,
-        "deploy_dice": 1.0,
-        "deploy_boundary_f1": 1.0,
-    }
+        trainer.model.conv.bias.zero_()
+        trainer.model.conv.bias[3] = 20
+    metrics = trainer.validate_deploy()
+    assert metrics["deploy_miou"] == 1.0
+    assert metrics["deploy_class_3_recall"] == 1.0
 
 
 def test_training_validates_final_non_frequency_step(tmp_path):
@@ -369,9 +345,21 @@ def test_native_prediction_uses_saved_preprocess(monkeypatch, tmp_path):
 
     def fake_predict(model, image, **kwargs):
         captured.update(kwargs)
-        return np.zeros(image.shape[:2], dtype=np.float32)
+        return np.zeros((4, *image.shape[:2]), dtype=np.float32)
 
     trainer.predictor = fake_predict
     list(trainer.predict_native(trainer.valid_loader))
 
     assert captured == {"size": 64, "mode": "gray_features"}
+
+
+def test_training_without_teacher(tmp_path):
+    trainer = _make_trainer(tmp_path)
+    trainer.teacher = None
+    losses, updated = trainer.step()
+    assert updated
+    trainer.save()
+    resumed = _make_trainer(tmp_path)
+    resumed.teacher = None
+    resumed.load_resume(str(tmp_path / "weights" / "last.train.pth"))
+    assert resumed.global_step == 1
