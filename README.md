@@ -1,117 +1,70 @@
-# BiRefNet multiclass fine-tuning
+# BiRefNet SEM Segmentation
 
-Fine-tune pretrained BiRefNet for battery SEM semantic segmentation. LoRA is removed.
-The default has four mutually exclusive pixel classes and trains the decoder plus
-squeeze module while freezing the Swin-L backbone and BatchNorm statistics.
+배터리 SEM 이미지를 픽셀 단위로 분할하는 **BiRefNet 다중 클래스 파인튜닝** 프로젝트입니다.
+기본 4개 클래스의 학습, 타일 추론, FastAPI 서버를 제공합니다.
 
-## Project layout
+## 시작하기
 
-- `src/`: reusable model, preprocessing, training, and inference logic.
-- `backend/`: FastAPI app, HTTP routes, request/response schemas, and image codecs.
-- `run_train.py` / `run_api.py`: training and API entrypoints.
-- `notebooks/`: examples that use the core logic directly.
-
-The backend imports `src`; the core logic does not depend on the backend.
-`src/build/` assembles configured components. `src/model/checkpoint.py` owns the
-shared model checkpoint format and pretrained head conversion; `src/train/checkpoint.py`
-adds optimizer, scheduler, scaler, EMA, and training progress for resume.
-
-## Data and pretrained weights
-
-Four synthetic 256x256 sample pairs are included; see `data/README.md` and
-`data/preview.png`. They are pipeline fixtures, not real SEM measurements.
-
-Put matching filename stems under `data/image` and `data/mask`.
-Masks must be single-channel integer or palette images with IDs `0, 1, 2, 3`,
-not RGB visualization masks or 0/255 binary masks. The default `255` is ignored.
-For example: 0 inter-particle pore, 1 solid particle, 2 internal crack,
-3 internal pore. Class names are your annotation convention, not inferred by code.
-All four classes, including class 0, contribute to the loss and macro metrics.
-
-The official initial checkpoint is
-[BiRefNet-general-epoch_244.pth](https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.pth),
-from [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet).
-Place it at `weight/BiRefNet-general-epoch_244.pth` (885,082,437 bytes).
-SHA256: `11341a6a1c12646627e8d28da025bfec8aad027929d377cbe8fd4759636cc77c`.
-The weight directory is git-ignored; copy the file separately to the training computer.
-
-Initial loading preserves all compatible pretrained tensors and initializes only
-the four segmentation heads (final + three auxiliary heads) whose output changes
-from one to four channels. Missing keys and unrelated shape mismatches are errors.
-Binary GDT attention remains one channel; its guidance now uses detached boundaries
-across all softmax classes, rather than treating a selected class as foreground.
-
-## Train
+저장소 루트에서 실행합니다.
 
 ```bash
 pip install -r requirements.txt
+```
+
+1. [사전학습 가중치](https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.pth)를 `weight/BiRefNet-general-epoch_244.pth`에 저장합니다.
+2. 같은 파일명 stem의 이미지와 마스크를 `data/image/`, `data/mask/`에 넣습니다.
+3. `config/train.yaml`에서 데이터 경로·해상도·학습 설정을 조정합니다. 클래스 수는 `config/model.yaml`에서 설정합니다.
+
+마스크는 **클래스 ID 0–3을 담은 단일 채널 또는 팔레트 이미지**여야 합니다. RGB 마스크는 지원하지 않으며, `255`는 무시합니다.
+포함된 [합성 샘플 4쌍](data/README.md)은 실행 확인용입니다. 실제 학습·평가에는 별도 SEM 데이터가 필요합니다.
+
+## 학습
+
+```bash
 python run_train.py --config config/train.yaml
 python run_train.py --resume run/<run-id>/weights/last.train.pth
 ```
 
-Run from the project root. Training selects CUDA if available, otherwise CPU.
-Class count is `birefnet.num_classes` in `config/model.yaml`; data paths, resolution,
-ignore index, optimizer and fine-tuning options are in `config/train.yaml`.
+기본 `decoder` 모드는 백본을 동결하고 squeeze·decoder를 학습합니다.
+`train.mode: partial`은 마지막 백본 단계도, `full`은 전체 모델을 학습합니다. CUDA가 있으면 자동 사용합니다.
 
-- `train.mode: decoder` (default): frozen backbone, train squeeze + decoder.
-- `train.mode: partial`: also train the final `train.backbone_stages` backbone stages.
-- `train.mode: full`: train all model parameters.
-- `train.backbone_lr_scale: 0.1`: lower learning rate for an unfrozen backbone.
-- `train.freeze_bn: true`: keep BatchNorm statistics fixed for small batches.
-- `teacher.enabled: false`: omit EMA memory and extra prediction by default.
+결과는 `run/<run-id>/`에 저장됩니다. `best_miou.pth`는 검증 mIoU 기준 최적 모델,
+`last.pth`는 마지막 모델, `last.train.pth`는 재개용 상태입니다.
+같은 시편에서 나온 이미지·크롭은 같은 분할에 두세요. 자동 분할은 이미지 단위입니다.
 
-The loss is masked multiclass Cross-Entropy + Dice, with final-output boundary
-weighting, multiscale supervision, and binary GDT auxiliary supervision. Geometry
-is shared between the weak/strong views. Indexed masks use nearest-neighbor resizing.
-GPU training uses mixed precision and optional backbone gradient checkpointing.
-The configured batch contains two augmentation views during training; 1024-pixel
-training on 24GB has not been measured. Reduce batch/resolution if needed, preserving
-thin cracks, or use gradient accumulation when increasing the effective batch.
+## 데이터·모델 점검
 
-Only train/validation sets are used; binary threshold calibration is removed.
-Membership is saved in CSV files. Automatic splitting is by input image, not specimen:
-keep related images from the same specimen and crops from the same original in one
-split. For grouped evaluation, prepare the run's CSV membership consistently.
-Report per-class IoU/Dice/recall, not only the mean, especially for rare cracks.
+```bash
+# 실제 로더의 입력, 증강, 마스크, 유효 영역 확인
+python scripts/check_data.py --size 256 --batches 2
 
-## Checkpoints and prediction
+# 학습 대상의 그래디언트 연결과 유한값 확인
+python scripts/check_gradients.py --size 64
 
-Runs are stored under `run/<run-id>`. `weights/best_miou.pth` is selected by native-size
-validation mIoU, `last.pth` is a standalone full model, and `last.train.pth` also saves
-optimizer/scheduler/scaler/optional EMA state for resume. Saved preprocessing is reused
-for inference. Resume/inference do not require the original pretrained file.
-Resume restores the saved configuration and split membership; it does not restore RNG
-or loader position exactly. Old LoRA overlays and binary runs cannot be resumed.
-Resume rejects a preprocessing size or input mode that differs from the checkpoint.
+# 원본 크기 예측: 클래스 ID PNG, 오버레이, 비교 이미지 저장
+python scripts/predict.py --weight run/<run-id>/weights/best_miou.pth --image data/image/sample_01.png
+```
+
+점검 결과는 `run/checks/`에 저장됩니다. 각 스크립트의 `--help`에서 옵션을 확인하세요.
+예측에 `--mask`를 주면 정답을 함께 표시하고, `--tiles 1 3`으로 타일 추론,
+`--class-id 3`으로 특정 클래스 확률 PNG를 저장할 수 있습니다.
+예측은 저장된 전처리를 재사용합니다. `labels.png`의 팔레트 인덱스가 클래스 ID입니다.
+
+## API
 
 ```bash
 python run_api.py --host 127.0.0.1 --port 8000 --weight run/<run-id>/weights/best_miou.pth
 ```
 
-The API defaults to CPU; use `--device cuda` on a GPU machine. For a nondefault class
-count, pass `--config run/<run-id>/config.yaml`. `POST /predict` accepts `base64_str`,
-optional `id`, `tiles` (e.g. `[1, 3]`), and `overlap`. All class logits are blended
-before argmax. Default `output_mode: labels` returns an indexed PNG with original
-class IDs, plus `num_classes` metadata. Decode palette PNG indices with Pillow:
-`np.asarray(Image.open(...))`; RGB conversion produces a visualization instead.
-`output_mode: probability` requires `class_id` and returns that class probability
-scaled to uint8 0..255. Binary `threshold` is no longer accepted.
+API 문서는 `http://127.0.0.1:8000/docs`에서 확인합니다. `POST /predict`에 `base64_str`을 전달하면 클래스 ID PNG를 반환합니다.
+GPU는 `--device cuda`, 기본과 다른 클래스 설정은 `--config run/<run-id>/config.yaml`을 지정합니다.
 
-Python `predict_logits` returns float32 C,H,W. Python `predict(...,
-output_mode="probability")` without a class ID returns all softmax probabilities.
-See `notebooks/01_predict.ipynb` for a CPU example using a trained full checkpoint.
-Training and API decoding both use stored image pixels without applying EXIF rotation
-or mirroring, so output labels share the stored image's coordinates.
+## 개발
 
-## Verification
+`src/`는 모델·데이터·학습·추론, `backend/`는 HTTP API, `scripts/`는 실행 점검 도구입니다.
 
 ```bash
 python -m pytest -q
 ```
 
-Tests cover indexed masks, loss/backprop, fine-tuning parameter selection, pretrained
-head replacement, resume, multiclass tiling and API output. They run on CPU with small
-fixtures. Real SEM accuracy and full-resolution GPU memory still require training
-and evaluation on the target computer. `scripts/check_upstream.py` is an optional
-binary architecture compatibility check against an explicitly supplied upstream
-checkout; it does not validate multiclass task accuracy.
+[원본 BiRefNet](https://github.com/ZhengPeng7/BiRefNet) 기반입니다. 현재 체크포인트는 전체 모델 형식이며, 이전 LoRA·이진 분할 체크포인트와 호환되지 않습니다.
