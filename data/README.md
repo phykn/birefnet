@@ -1,15 +1,17 @@
 # Synthetic sample data
 
-Four generated SEM-like fixtures, **not real battery measurements**.
+Four generated image/mask pairs for pipeline checks, **not real observations**.
 Each `image/sample_XX.png` (grayscale, 256x256) pairs with the same filename in
 `mask/` (PNG palette mode P). Pixel values remain integer class IDs:
 
 | ID | Meaning | Palette color |
 |---|---|---|
-| 0 | Inter-particle pore | Dark navy |
-| 1 | Solid particle | Gray |
-| 2 | Internal crack | Coral red |
-| 3 | Internal pore | Cyan |
+| 0 | Background | Dark navy |
+| 1 | Filled shapes | Gray |
+| 2 | Branching lines | Coral red |
+| 3 | Interior holes | Cyan |
+
+These meanings describe the synthetic fixtures only. Define class IDs for your own dataset.
 
 Use Pillow without RGB conversion to read label IDs. `preview.png` shows each
 image beside its colored mask. The deterministic generator is

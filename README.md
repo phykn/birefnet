@@ -1,6 +1,6 @@
-# BiRefNet SEM Segmentation
+# BiRefNet Multiclass Segmentation
 
-Fine-tune **BiRefNet for multiclass semantic segmentation** of battery SEM images.
+Fine-tune **BiRefNet for multiclass semantic segmentation** on your own image datasets.
 Supports four classes by default, tiled inference, and a FastAPI server.
 
 ## Quick start
@@ -16,7 +16,7 @@ pip install -r requirements.txt
 3. Set data paths, resolution, and training options in `config/train.yaml`. Set the class count in `config/model.yaml`.
 
 Masks must be **single-channel or palette images containing class IDs 0-3**. RGB masks are unsupported; `255` is ignored.
-The included [four synthetic pairs](data/README.md) are pipeline fixtures. Use separate SEM data for real training and evaluation.
+The included [four synthetic pairs](data/README.md) are pipeline fixtures. Use your own annotated data for training and evaluation.
 
 ## Training
 
@@ -30,7 +30,7 @@ The default `decoder` mode freezes the backbone and trains the squeeze module an
 
 Results are saved under `run/<run-id>/`. `best_miou.pth` is selected by validation mIoU,
 `last.pth` is the latest model, and `last.train.pth` includes the state needed to resume.
-Keep images and crops from the same specimen in the same split. Automatic splitting operates on individual images.
+Keep related images and crops from the same source in the same split. Automatic splitting operates on individual images.
 
 ## Data and model checks
 

@@ -1,4 +1,4 @@
-"""Generate four deterministic synthetic SEM-like pairs, not experimental data."""
+"""Generate four deterministic synthetic image/mask pairs for pipeline checks."""
 from pathlib import Path
 
 import cv2
