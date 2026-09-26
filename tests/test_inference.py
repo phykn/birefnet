@@ -210,3 +210,24 @@ def test_non_square_orientation_survives_restore_and_tiling(tiles):
     assert logits.shape == (4, 31, 65)
     assert np.all(logits.argmax(axis=0)[4:-4, 4:25] == 0)
     assert np.all(logits.argmax(axis=0)[4:-4, 40:-4] == 2)
+
+
+@pytest.mark.parametrize("grid", [1, 2])
+def test_sem_inference_generates_features_from_each_input_patch(monkeypatch, grid):
+    from src.prepare.fit import fit_tensor
+
+    image = np.arange(32 * 48, dtype=np.uint8).reshape(32, 48)
+    seen = []
+
+    def capture(model, tensors, device):
+        seen.extend(tensors)
+        return np.zeros((len(tensors), 4, 32, 32), np.float32)
+
+    monkeypatch.setattr("src.predict.inference._infer", capture)
+    predict_logits(_ConstantModel(), image, size=32, is_sem=True, tiles=(grid,))
+    boxes = plan(32, 48, grid=grid)
+    assert len(seen) == len(boxes)
+    for actual, box in zip(seen, boxes):
+        patch = image[box.top:box.bottom, box.left:box.right]
+        expected, _ = fit_tensor(patch, size=32, is_sem=True)
+        np.testing.assert_array_equal(actual, expected)

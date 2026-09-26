@@ -49,7 +49,7 @@ def test_defaults_to_class_labels(monkeypatch, api_client):
     np.testing.assert_array_equal(_decode(payload["base64_str"]), np.tile(np.arange(4, dtype=np.uint8), (16, 6)))
     assert captured["tiles"] == (1, 3)
     assert captured["size"] == 1024
-    assert captured["mode"] == "rgb"
+    assert captured["is_sem"] is False
 
 
 def test_probability_mode_requires_class_id(monkeypatch, api_client):
@@ -123,7 +123,7 @@ def test_uses_checkpoint_preprocess_contract(monkeypatch, api_client):
     client = api_client(
         SimpleNamespace(num_classes=4),
         torch.device("cpu"),
-        preprocess=PreprocessSpec(size=640, mode="gray_repeat"),
+        preprocess=PreprocessSpec(is_sem=True),
     )
     response = client.post(
         "/predict",
@@ -131,8 +131,8 @@ def test_uses_checkpoint_preprocess_contract(monkeypatch, api_client):
     )
 
     assert response.status_code == 200
-    assert captured["size"] == 640
-    assert captured["mode"] == "gray_repeat"
+    assert captured["size"] == 1024
+    assert captured["is_sem"] is True
 
 
 def test_decode_rejects_oversized_base64_before_allocating(monkeypatch):
@@ -143,5 +143,31 @@ def test_decode_rejects_oversized_base64_before_allocating(monkeypatch):
 
 def test_reads_preprocess_from_full_checkpoint_metadata():
     from backend.app import read_preprocess
-    model = SimpleNamespace(loaded_meta={"preprocess": {"size": 640, "mode": "gray_repeat"}})
-    assert read_preprocess(model) == PreprocessSpec(size=640, mode="gray_repeat")
+    model = SimpleNamespace(loaded_meta={"preprocess": {"size": 1024, "is_sem": True}})
+    assert read_preprocess(model) == PreprocessSpec(is_sem=True)
+
+
+def test_app_defaults_to_loaded_checkpoint_preprocess(api_client):
+    model = SimpleNamespace(num_classes=4, loaded_meta={
+        "preprocess": {"size": 1024, "is_sem": True},
+    })
+    client = api_client(model, torch.device("cpu"))
+    assert client.app.state.preprocess == PreprocessSpec(is_sem=True)
+
+
+def test_app_explicit_preprocess_overrides_checkpoint(api_client):
+    model = SimpleNamespace(num_classes=4, loaded_meta={
+        "preprocess": {"size": 1024, "is_sem": True},
+    })
+    client = api_client(model, torch.device("cpu"), preprocess=PreprocessSpec())
+    assert client.app.state.preprocess == PreprocessSpec()
+
+
+def test_rejects_pillow_decompression_bomb_as_large_image(monkeypatch, api_client):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 7)
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
+    response = client.post(
+        "/predict", json={"base64_str": _encode(np.zeros((4, 4, 3), np.uint8))},
+    )
+    assert response.status_code == 413
+    assert response.json() == {"detail": "image too large"}

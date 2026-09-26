@@ -32,3 +32,29 @@ def test_decode_matches_training_pixels_with_exif_orientation(tmp_path, shape, o
 
     assert actual.shape == expected.shape == (height, width, 3)
     np.testing.assert_allclose(actual, expected, atol=2)
+
+
+def test_decode_matches_training_pixels_for_16bit_grayscale(tmp_path):
+    pixels = np.array([[0, 256, 1000, 65535]], dtype=np.uint16)
+    output = BytesIO()
+    Image.fromarray(pixels).save(output, format="PNG")
+    raw = output.getvalue()
+    path = tmp_path / "image.png"
+    path.write_bytes(raw)
+
+    expected = read_image(str(path))
+    actual = decode(base64.b64encode(raw).decode("ascii"))
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_decode_rejects_truncated_image_pixels():
+    output = BytesIO()
+    pixels = np.random.default_rng(0).integers(0, 256, (16, 16, 3), dtype=np.uint8)
+    Image.fromarray(pixels).save(output, format="PNG")
+    raw = output.getvalue()
+    truncated = raw[:len(raw) // 2]
+    with Image.open(BytesIO(truncated)) as source:
+        assert source.size == (16, 16)
+    with pytest.raises(ValueError, match="invalid image"):
+        decode(base64.b64encode(truncated).decode("ascii"))

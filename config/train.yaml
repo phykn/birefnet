@@ -1,35 +1,24 @@
 data:
   image_dir: "data/image"
   mask_dir: "data/mask"
-  size: 1024
   valid_ratio: 0.1
-  ignore_index: 255
-  mode: rgb
-  global_prob: 0.3
-  boundary_prob: 0.5
+  is_sem: true
+  crop_prob: 1.0
+  min_crop_size: 256
 
 augment:
-  weak:
-    brightness: 0.1
-    contrast: 0.2
-  strong:
-    brightness: 0.2
-    contrast: 0.4
+  masking_prob: 1.0
+  brightness: 0.2
+  contrast: 0.4
 
 loader:
   batch: 1
   num_workers: 2
-  pin_memory: true
-  persistent_workers: true
-  prefetch_factor: 2
 
 train:
-  mode: decoder
-  backbone_stages: 1
-  freeze_bn: true
+  ema_decay: 0.99
   max_lr: 1.0e-4
   min_lr: 1.0e-7
-  backbone_lr_scale: 0.1
   weight_decay: 0.01
   warmup_steps: 50
   max_grad_norm: 1.0
@@ -40,17 +29,7 @@ train:
 
 loss:
   lambda_cls: 1.0
-  region_loss: dice
   lambda_region: 1.0
   lambda_boundary: 0.5
   boundary_radius: 3
   lambda_aux: 1.0
-
-teacher:
-  enabled: false
-  decay: 0.99
-  start: 100
-  ramp: 100
-  confidence: 0.95
-  min_gt_weight: 0.25
-  loss_weight: 0.1

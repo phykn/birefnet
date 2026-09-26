@@ -61,22 +61,23 @@ def test_multiclass_forward_and_backward_cpu(tiny_model):
     assert output.logits[-1].shape == (1, 4, 64, 64)
 
 
-@pytest.mark.parametrize("mode,stages", [("decoder", 0), ("partial", 1), ("partial", 2), ("full", 4)])
-def test_finetune_modes_select_parameters(tiny_model, mode, stages):
-    tiny_model.configure_finetune(mode, backbone_stages=max(stages, 1))
-    for idx, layer in enumerate(tiny_model.bb.layers):
-        assert all(param.requires_grad == (idx >= 4 - stages) for param in layer.parameters())
-    assert all(param.requires_grad for param in tiny_model.decoder.parameters())
+def test_only_decoder_and_squeeze_are_trainable(tiny_model):
+    tiny_model.configure_finetune()
+    assert all(not param.requires_grad for param in tiny_model.bb.parameters())
+    for module in (tiny_model.squeeze_module, tiny_model.decoder):
+        assert all(param.requires_grad for param in module.parameters())
     assert tiny_model.list_trainable()
     assert tiny_model.stats["total"] == tiny_model.stats["frozen"] + tiny_model.stats["trainable"]
     tiny_model.train()
+    assert not tiny_model.bb.training
     assert all(not module.training for module in tiny_model.modules() if isinstance(module, nn.BatchNorm2d))
 
 
-def test_batchnorm_freezing_can_be_disabled(tiny_model):
-    tiny_model.configure_finetune("full", freeze_bn=False)
+def test_batchnorm_stays_frozen_after_eval_train_cycle(tiny_model):
+    tiny_model.eval()
     tiny_model.train()
-    assert all(module.training for module in tiny_model.modules() if isinstance(module, nn.BatchNorm2d))
+    assert not tiny_model.bb.training
+    assert all(not module.training for module in tiny_model.modules() if isinstance(module, nn.BatchNorm2d))
 
 
 def test_guidance_marks_foreground_class_interfaces():
@@ -145,7 +146,8 @@ def test_full_checkpoint_predictor_skips_missing_base_weights(tiny_model, tmp_pa
     path = tmp_path / "model.pth"
     torch.save({
         "format": "birefnet-multiclass-v1", "model": tiny_model.state_dict(),
-        "num_classes": 4, "preprocess": {"size": 64},
+        "num_classes": 4, "preprocess": {"size": 1024},
+        "teacher": {"legacy_weight": torch.ones(2)},
     }, path)
     cfg = OmegaConf.create({"birefnet": {
         "weight": "absent_base.pth", "channels": [32, 16, 8, 4],
@@ -153,7 +155,8 @@ def test_full_checkpoint_predictor_skips_missing_base_weights(tiny_model, tmp_pa
     }})
     loaded = build_predictor(cfg, str(path), torch.device("cpu"))
     assert loaded.training is False
-    assert loaded.loaded_meta["preprocess"] == {"size": 64}
+    assert loaded.loaded_meta["preprocess"] == {"size": 1024}
+    assert "teacher" not in loaded.loaded_meta
     for key, value in loaded.state_dict().items():
         assert torch.equal(value, tiny_model.state_dict()[key])
 

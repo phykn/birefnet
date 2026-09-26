@@ -55,48 +55,31 @@ class DiceLoss(nn.Module):
         return loss.mean()
 
 
-class IoULoss(DiceLoss):
-    def forward(self, pred, target, valid=None):
-        if valid is None:
-            valid = torch.ones_like(pred[:, :1])
-        dims = (0, 2, 3)
-        intersection = (pred * target * valid).sum(dims)
-        union = ((pred + target - pred * target) * valid).sum(dims)
-        return (1 - (intersection + self.eps) / (union + self.eps)).mean()
-
-
 class SegmentationLoss(nn.Module):
     def __init__(self, lambda_cls=1.0, lambda_region=1.0, lambda_boundary=0.5,
-                 region_loss="dice", boundary_radius=3, num_classes=4, ignore_index=255):
+                 boundary_radius=3, num_classes=4, ignore_index=255):
         super().__init__()
-        if region_loss not in {"dice", "iou"}:
-            raise ValueError("region_loss must be 'dice' or 'iou'")
         if num_classes < 2 or 0 <= ignore_index < num_classes:
             raise ValueError("invalid class count or ignore index")
         if boundary_radius < 1:
             raise ValueError("boundary_radius must be >= 1")
         self.num_classes = num_classes
         self.ignore_index = ignore_index
-        self.region = DiceLoss() if region_loss == "dice" else IoULoss()
+        self.region = DiceLoss()
         self.radius = boundary_radius
         self.lambda_cls = lambda_cls
         self.lambda_region = lambda_region
         self.lambda_boundary = lambda_boundary
 
-    def compute(self, pred, target, valid=None, weight=None, cut=None, include_boundary=True):
+    def compute(self, pred, target, valid=None, cut=None, include_boundary=True):
         # High-resolution reductions overflow float16 even when logits are finite.
         pred = pred.float()
         if pred.shape[1] != self.num_classes:
             raise ValueError(f"expected {self.num_classes} logit channels, got {pred.shape[1]}")
         target, valid, onehot = prepare_target(pred, target, valid, self.ignore_index)
-        if weight is None:
-            weight = torch.ones_like(valid)
-        elif weight.shape[-2:] != pred.shape[-2:]:
-            weight = F.interpolate(weight, pred.shape[-2:], mode="area")
-        weight = weight.clamp(0, 1)
         ce = F.cross_entropy(pred, target, ignore_index=self.ignore_index, reduction="none")[:, None]
-        cls = masked_mean(ce * weight, valid)
-        region = self.region(pred.softmax(1), onehot, valid * weight)
+        cls = masked_mean(ce, valid)
+        region = self.region(pred.softmax(1), onehot, valid)
         boundary = pred.sum() * 0.0
         if include_boundary:
             active = make_band(onehot, self.radius).amax(1, keepdim=True) * erode_valid(valid, self.radius)
@@ -104,11 +87,11 @@ class SegmentationLoss(nn.Module):
                 cut = F.interpolate(cut.float(), pred.shape[-2:], mode="nearest")
                 blocked = F.max_pool2d(cut, 2 * self.radius + 1, 1, self.radius)
                 active = active * (1 - blocked)
-            boundary = masked_mean(ce * weight, active)
+            boundary = masked_mean(ce, active)
         return {"cls_raw": cls, "region_raw": region, "boundary_raw": boundary,
                 "cls": cls * self.lambda_cls, "region": region * self.lambda_region,
                 "boundary": boundary * self.lambda_boundary}
 
-    def forward(self, pred, target, valid=None, weight=None, cut=None, include_boundary=True):
-        parts = self.compute(pred, target, valid, weight, cut, include_boundary)
+    def forward(self, pred, target, valid=None, cut=None, include_boundary=True):
+        parts = self.compute(pred, target, valid, cut, include_boundary)
         return parts["cls"] + parts["region"] + parts["boundary"]

@@ -11,7 +11,7 @@ from tqdm import tqdm
 from ..prepare.spec import PreprocessSpec
 from .checkpoint import CheckpointStore
 from .schedule import CosineSchedule
-from .teacher import Teacher
+from .ema import EMA
 from .validate import Validator
 
 
@@ -24,11 +24,11 @@ class Trainer:
         criterion: nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: CosineSchedule,
-        teacher: Teacher | None,
         save_dir: str,
         predictor: Callable[..., np.ndarray],
         max_grad_norm: float = 1.0,
         accum_steps: int = 1,
+        ema_decay: float = 0.99,
         preprocess: PreprocessSpec | None = None,
         ignore_index: int = 255,
     ) -> None:
@@ -47,7 +47,7 @@ class Trainer:
         self.criterion = criterion
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.teacher = teacher
+        self.ema = EMA(model, decay=ema_decay)
         self.save_dir = save_dir
         self.max_grad_norm = float(max_grad_norm)
         self.accum_steps = int(accum_steps)
@@ -108,7 +108,7 @@ class Trainer:
             optimizer=self.optimizer,
             scheduler=self.scheduler,
             scaler=self.scaler,
-            teacher=self.teacher,
+            ema=self.ema,
             save_dir=self.save_dir,
             preprocess=self.preprocess,
             ignore_index=self.ignore_index,
@@ -138,25 +138,16 @@ class Trainer:
             self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         accum: dict[str, float] = {}
-        teacher_scale = self.teacher.scale(self.global_step + 1) if self.teacher is not None else 0.0
         for _ in range(self.accum_steps):
             batch = self.move(self.next_batch())
             with torch.amp.autocast(
                 self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
             ):
-                teacher_logit = None
-                if teacher_scale > 0.0:
-                    teacher_logit = self.teacher.predict(
-                        self.model,
-                        batch["weak"],
-                    )
-                inputs = torch.cat([batch["weak"], batch["strong"]], dim=0)
+                inputs = batch["image"]
                 out = self.model(inputs)
                 loss_dict, loss = self.criterion(
                     out,
                     batch,
-                    teacher_logit=teacher_logit,
-                    teacher_scale=teacher_scale,
                 )
             if not torch.isfinite(loss):
                 raise FloatingPointError(
@@ -182,8 +173,7 @@ class Trainer:
         self.scaler.update()
         updated = self.scaler.get_scale() >= old_scale
         if updated:
-            if self.teacher is not None:
-                self.teacher.update(self.model)
+            self.ema.update(self.model)
             self.scheduler.step()
             self.global_step += 1
         accum["grad_norm"] = float(grad_norm)

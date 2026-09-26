@@ -17,7 +17,7 @@ class ConstantModel(torch.nn.Module):
         super().__init__()
         self.num_classes = 4
         self.logits = torch.nn.Parameter(torch.tensor([0., 0., 0., 10.]))
-        self.loaded_meta = {"preprocess": {"size": 32, "mode": "gray_repeat"}}
+        self.loaded_meta = {"preprocess": {"size": 1024, "is_sem": True}}
 
     def forward(self, image):
         return Output([self.logits[None, :, None, None].expand(len(image), 4, *image.shape[-2:])])
@@ -25,7 +25,7 @@ class ConstantModel(torch.nn.Module):
 
 def test_loader_preview_excludes_padding_and_ignored_labels(tmp_path):
     masks = torch.tensor([[[0, 1], [3, 255]]])
-    batch = {"weak": torch.zeros(1, 3, 2, 2), "strong": torch.ones(1, 3, 2, 2),
+    batch = {"image": torch.zeros(1, 3, 2, 2),
              "mask": masks, "valid": torch.tensor([[[[1, 1], [0, 1]]]]).float(),
              "cut": torch.zeros(1, 1, 2, 2)}
     report = inspect([batch, batch], 4, 255, 1, tmp_path)
@@ -34,7 +34,7 @@ def test_loader_preview_excludes_padding_and_ignored_labels(tmp_path):
     assert report["batches"][0]["ignored_pixels"] == 2
     assert report == json.loads((tmp_path / "summary.json").read_text())
     with Image.open(report["batches"][0]["previews"][0]) as preview:
-        assert preview.size == (1920, 352)
+        assert preview.size == (1600, 352)
 
 
 def test_loader_preview_rejects_empty_or_invalid_batches(tmp_path):
@@ -58,7 +58,7 @@ def test_prediction_saves_native_class_ids_and_probability(tmp_path):
     with Image.open(output / "probability_3.png") as prob:
         assert np.all(np.asarray(prob) == 255)
     assert report["class_pixels"] == [0, 0, 0, 17 * 29]
-    assert report["preprocess"] == {"size": 32, "mode": "gray_repeat"}
+    assert report["preprocess"] == {"size": 1024, "is_sem": True}
     assert (output / "preview.png").is_file()
     assert (output / "overlay.png").is_file()
 
@@ -82,10 +82,11 @@ def test_prediction_cli_loads_saved_run_configuration(monkeypatch, tmp_path, tin
     from src.model.checkpoint import pack_model
     from src.prepare.spec import PreprocessSpec
 
+    monkeypatch.setattr(PreprocessSpec, "size", 64)
     weights = tmp_path / "weights"
     weights.mkdir()
     checkpoint = weights / "last.pth"
-    torch.save(pack_model(tiny_model, PreprocessSpec(size=64)), checkpoint)
+    torch.save(pack_model(tiny_model, PreprocessSpec()), checkpoint)
     OmegaConf.save({"birefnet": {"channels": [32, 16, 8, 4], "num_classes": 4}}, tmp_path / "config.yaml")
     image = tmp_path / "image.png"
     Image.new("RGB", (29, 17), (100, 120, 140)).save(image)

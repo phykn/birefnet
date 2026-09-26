@@ -1,4 +1,4 @@
-"""Audit one real two-view training batch without an optimizer step."""
+"""Audit one real training batch without an optimizer step."""
 
 import argparse
 import json
@@ -43,7 +43,7 @@ def audit(model, batch, criterion) -> dict:
                 hooks.append(param.register_post_accumulate_grad_hook(
                     lambda param, name=name: record(name, param)
                 ))
-        inputs = torch.cat([batch["weak"], batch["strong"]], dim=0)
+        inputs = batch["image"]
         _, loss = criterion(model(inputs), batch)
         finite_loss = bool(torch.isfinite(loss))
         if finite_loss and loss.requires_grad:
@@ -74,29 +74,17 @@ def audit(model, batch, criterion) -> dict:
         model.train(training)
 
 
-def check_size(value: str) -> int:
-    size = int(value)
-    if size < 32 or size % 32:
-        raise argparse.ArgumentTypeError("size must be a positive multiple of 32")
-    return size
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=ROOT / "config/train.yaml")
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--size", type=check_size, default=64)
-    parser.add_argument("--mode", choices=("decoder", "partial", "full"))
     parser.add_argument("--output", type=Path, default=ROOT / "run/checks/gradients.json")
     args = parser.parse_args()
     cfg = load_config(args.config)
-    cfg.data.size = args.size
     cfg.loader.batch = 1
     cfg.loader.num_workers = 0
     cfg.loader.persistent_workers = False
     cfg.loader.pin_memory = False
-    if args.mode is not None:
-        cfg.train.mode = args.mode
     weight = cfg.birefnet.get("weight")
     if weight and not Path(str(weight)).is_file():
         raise FileNotFoundError(f"Configured base checkpoint not found: {weight}")
@@ -108,18 +96,13 @@ def main() -> int:
         lambda_cls=cfg.loss.lambda_cls,
         lambda_region=cfg.loss.lambda_region,
         lambda_boundary=cfg.loss.lambda_boundary,
-        region_loss=cfg.loss.region_loss,
         boundary_radius=cfg.loss.boundary_radius,
         lambda_aux=cfg.loss.lambda_aux,
-        teacher_confidence=cfg.teacher.confidence,
-        min_gt_weight=cfg.teacher.min_gt_weight,
-        lambda_teacher=cfg.teacher.loss_weight,
         num_classes=cfg.birefnet.num_classes,
         ignore_index=cfg.data.get("ignore_index", 255),
     ).to(device)
     report = audit(model, batch, criterion)
-    report.update(config=str(args.config), device=str(device), size=args.size,
-                  mode=cfg.train.mode, teacher_active=False)
+    report.update(config=str(args.config), device=str(device), size=batch["image"].shape[-1])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     summary = {key: value for key, value in report.items() if key != "gradients"}

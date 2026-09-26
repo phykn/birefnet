@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from src.prepare.convert import MEAN, STD, convert, normalize
+from src.prepare.convert import MEAN, STD, _enhance, convert, normalize
 from src.prepare.fit import fit_image, fit_mask, fit_tensor, plan, restore
 from src.prepare.spec import PreprocessSpec
 
@@ -13,12 +14,8 @@ def test_normalize_known_rgb_pixel():
 
 def test_modes_preserve_declared_channel_semantics():
     image = np.array([[[255, 0, 0], [0, 255, 0]]], dtype=np.uint8)
-    np.testing.assert_array_equal(convert(image, "rgb"), image)
-    gray = convert(image, "gray_repeat")
-    assert gray.shape == image.shape
-    np.testing.assert_array_equal(gray[..., 0], gray[..., 1])
-    np.testing.assert_array_equal(gray[..., 1], gray[..., 2])
-    assert convert(image, "gray_features").shape == image.shape
+    np.testing.assert_array_equal(convert(image, False), image)
+    assert convert(image, True).shape == image.shape
 
 
 def test_fixed_canvas_and_valid_mask_for_wide_image():
@@ -62,9 +59,62 @@ def test_fit_tensor_matches_fit_image_without_allocating_valid_contract():
 
 
 def test_preprocess_spec_round_trip_and_legacy_default():
-    spec = PreprocessSpec(size=640, mode="gray_features")
+    spec = PreprocessSpec(is_sem=True)
     assert PreprocessSpec.from_meta({"preprocess": spec.to_meta()}) == spec
     assert PreprocessSpec.from_meta({}) == PreprocessSpec()
 
     with np.testing.assert_raises(RuntimeError):
-        PreprocessSpec.from_meta({"preprocess": {"size": 640.5, "mode": "rgb"}})
+        PreprocessSpec.from_meta({"preprocess": {"size": 640.5, "is_sem": False}})
+
+
+def test_sem_channels():
+    gray = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    features = convert(gray, True)
+    low, high = np.percentile(gray, (1, 99))
+    expected = np.rint(np.clip((gray.astype(float) - low) / (high - low), 0, 1) * 255)
+    np.testing.assert_array_equal(features[..., 0], gray)
+    np.testing.assert_array_equal(features[..., 1], expected)
+    np.testing.assert_array_equal(features[..., 2], _enhance(gray))
+    spec = PreprocessSpec(is_sem=True)
+    assert PreprocessSpec.from_meta({"preprocess": spec.to_meta()}) == spec
+
+
+def test_constant_sem_image_is_finite():
+    for value in (0, 127, 255):
+        gray = np.full((16, 16), value, np.uint8)
+        features = convert(gray, True)
+        assert not features[..., 1].any()
+        assert np.isfinite(normalize(features)).all()
+
+
+@pytest.mark.parametrize("value", ["false", 0, 1, None])
+def test_sem_flag_rejects_non_booleans(value):
+    with pytest.raises(ValueError, match="bool"):
+        convert(np.zeros((8, 8), np.uint8), value)
+    with pytest.raises(ValueError, match="bool"):
+        PreprocessSpec(is_sem=value)
+
+
+@pytest.mark.parametrize("mode, expected", [("rgb", False), ("sem_features", True)])
+def test_legacy_preprocess_metadata_maps_only_equivalent_inputs(mode, expected):
+    spec = PreprocessSpec.from_meta({"preprocess": {"size": 1024, "mode": mode}})
+    assert spec.is_sem is expected
+    assert spec.to_meta() == {"size": 1024, "is_sem": expected}
+
+
+@pytest.mark.parametrize("mode", ["gray_repeat", "gray_features"])
+def test_removed_preprocess_modes_fail_explicitly(mode):
+    with pytest.raises(RuntimeError, match="preprocess"):
+        PreprocessSpec.from_meta({"preprocess": {"size": 1024, "mode": mode}})
+
+
+@pytest.mark.parametrize("size", [512, 2048])
+def test_checkpoint_input_size_must_match_pretrained_resolution(size):
+    with pytest.raises(RuntimeError, match="preprocess"):
+        PreprocessSpec.from_meta({"preprocess": {"size": size, "is_sem": True}})
+
+
+def test_input_size_cannot_be_overridden():
+    assert PreprocessSpec().size == 1024
+    with pytest.raises(TypeError):
+        PreprocessSpec(size=512)

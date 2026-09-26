@@ -1,28 +1,18 @@
 from dataclasses import dataclass
-from typing import Any
-
-from .convert import InputMode
-
-MODES = {"rgb", "gray_repeat", "gray_features"}
+from typing import Any, ClassVar
 
 
 @dataclass(frozen=True)
 class PreprocessSpec:
-    size: int = 1024
-    mode: InputMode = "rgb"
+    size: ClassVar[int] = 1024
+    is_sem: bool = False
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.size, int)
-            or isinstance(self.size, bool)
-            or self.size <= 0
-        ):
-            raise ValueError("preprocess size must be a positive integer")
-        if not isinstance(self.mode, str) or self.mode not in MODES:
-            raise ValueError(f"Unsupported input mode: {self.mode!r}")
+        if not isinstance(self.is_sem, bool):
+            raise ValueError("is_sem must be a bool")
 
     def to_meta(self) -> dict[str, Any]:
-        return {"size": int(self.size), "mode": self.mode}
+        return {"size": int(self.size), "is_sem": self.is_sem}
 
     @classmethod
     def from_meta(cls, meta: dict[str, Any] | None) -> "PreprocessSpec":
@@ -32,9 +22,12 @@ class PreprocessSpec:
         if not isinstance(value, dict):
             raise RuntimeError("Checkpoint preprocess metadata must be a mapping")
         try:
+            if type(value["size"]) is not int or value["size"] != cls.size:
+                raise ValueError("Input size is fixed at 1024")
+            is_sem = (value["is_sem"] if "is_sem" in value else
+                      {"rgb": False, "sem_features": True}[value["mode"]])
             return cls(
-                size=value["size"],
-                mode=value["mode"],
+                is_sem=is_sem,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("Invalid checkpoint preprocess metadata") from exc

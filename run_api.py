@@ -5,7 +5,7 @@ import uvicorn
 
 from src.build.model import build_predictor
 from src.config import load_config
-from backend.app import build_app, read_preprocess
+from backend.app import build_app
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,11 +23,7 @@ def main() -> None:
     device = torch.device(args.device)
     cfg = load_config(args.config)
     model = build_predictor(cfg, args.weight, device)
-    app = build_app(
-        model=model,
-        device=device,
-        preprocess=read_preprocess(model),
-    )
+    app = build_app(model=model, device=device)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

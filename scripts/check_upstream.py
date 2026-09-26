@@ -43,7 +43,6 @@ def main() -> None:
     with torch.device("meta"):
         upstream = UpstreamBiRefNet(bb_pretrained=False)
         local = BiRefNet(num_classes=1)
-        local.configure_finetune("full")
     for model in (upstream, local):
         model.load_state_dict(state, strict=True, assign=True)
         model.to(args.device)
@@ -58,6 +57,7 @@ def main() -> None:
         ]:
             for model in (upstream, local):
                 model.train(training)
+                model.bb.eval()
                 # Use the same BatchNorm statistics for both implementations.
                 for module in model.modules():
                     if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):

@@ -5,7 +5,6 @@ from typing import Literal
 import numpy as np
 import torch
 
-from ..prepare.convert import InputMode, convert
 from ..prepare.fit import Fit, fit_tensor, restore
 from .tile import plan, weigh
 
@@ -48,6 +47,7 @@ def _merge(
     overlap: float,
     batch_size: int,
     device: torch.device,
+    is_sem: bool = False,
 ) -> np.ndarray:
     height, width = image.shape[:2]
     boxes = plan(height, width, grid=grid, overlap=overlap)
@@ -60,7 +60,7 @@ def _merge(
         fits = []
         for box in chunk:
             crop = image[box.top : box.bottom, box.left : box.right]
-            tensor, fit = fit_tensor(crop, size=size, mode="rgb")
+            tensor, fit = fit_tensor(crop, size=size, is_sem=is_sem)
             tensors.append(tensor)
             fits.append(fit)
 
@@ -82,7 +82,7 @@ def predict_logits(
     image: np.ndarray,
     *,
     size: int = 1024,
-    mode: InputMode = "rgb",
+    is_sem: bool = False,
     tiles: Sequence[int] = (1,),
     overlap: float = 1 / 3,
     tile_batch: int = 2,
@@ -105,21 +105,21 @@ def predict_logits(
     if model.training:
         model.eval()
     device = next(model.parameters()).device
-    processed = convert(image, mode=mode)
     total = None
     for grid in grids:
         if grid == 1:
-            tensor, fit = fit_tensor(processed, size=size, mode="rgb")
+            tensor, fit = fit_tensor(image, size=size, is_sem=is_sem)
             output = _restore(_infer(model, [tensor], device)[0], fit)
         else:
             output = _merge(
                 model,
-                processed,
+                image,
                 grid,
                 size,
                 overlap,
                 tile_batch,
                 device,
+                is_sem,
             )
         if total is None:
             total = output.astype(np.float32, copy=True)
@@ -138,7 +138,7 @@ def predict(
     output_mode: OutputMode = "labels",
     class_id: int | None = None,
     size: int = 1024,
-    mode: InputMode = "rgb",
+    is_sem: bool = False,
     tiles: Sequence[int] = (1,),
     overlap: float = 1 / 3,
     tile_batch: int = 2,
@@ -153,7 +153,7 @@ def predict(
                 or not 0 <= class_id < model.num_classes):
             raise ValueError("class_id must be in [0, num_classes)")
     logits = predict_logits(
-        model, image, size=size, mode=mode, tiles=tiles,
+        model, image, size=size, is_sem=is_sem, tiles=tiles,
         overlap=overlap, tile_batch=tile_batch,
     )
     if output_mode == "labels":

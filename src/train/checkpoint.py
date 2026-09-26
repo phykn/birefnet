@@ -1,20 +1,23 @@
+import os
+import uuid
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from ..model.checkpoint import pack_model, read_checkpoint
 from ..prepare.spec import PreprocessSpec
-from ..storage import atomic_torch_save
 
 
 class CheckpointStore:
     def __init__(self, *, model: Any, optimizer: Any, scheduler: Any,
-                 scaler: Any, teacher: Any, save_dir: str,
+                 scaler: Any, ema: Any, save_dir: str,
                  preprocess: PreprocessSpec, ignore_index: int = 255) -> None:
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.scaler = scaler
-        self.teacher = teacher
+        self.ema = ema
         self.save_dir = save_dir
         self.preprocess = preprocess
         self.ignore_index = ignore_index
@@ -23,12 +26,18 @@ class CheckpointStore:
         root = Path(self.save_dir) / "weights"
         root.mkdir(parents=True, exist_ok=True)
         payload = pack_model(self.model, self.preprocess, self.ignore_index)
+        ema_state = self.ema.state_dict()
         atomic_torch_save(payload, root / "last.pth")
+        averaged = dict(payload)
+        averaged["model"] = dict(payload["model"])
+        averaged["model"].update(ema_state)
+        atomic_torch_save(averaged, root / "last_ema.pth")
         payload.update(
             optimizer=self.optimizer.state_dict(),
             scheduler=self.scheduler.state_dict(),
             scaler=self.scaler.state_dict(),
-            teacher=self.teacher.state_dict() if self.teacher is not None else None,
+            ema=ema_state,
+            ema_decay=self.ema.decay,
             global_step=global_step, best_region=best_region,
         )
         atomic_torch_save(payload, root / "last.train.pth")
@@ -49,12 +58,25 @@ class CheckpointStore:
             raise RuntimeError("Checkpoint ignore_index differs from configuration")
         if PreprocessSpec.from_meta(state) != self.preprocess:
             raise RuntimeError("Checkpoint preprocess differs from configuration")
-        if (state["teacher"] is None) != (self.teacher is None):
-            raise RuntimeError("Checkpoint teacher configuration differs")
         self.model.load_state_dict(state["model"], strict=True)
         self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         self.scaler.load_state_dict(state["scaler"])
-        if self.teacher is not None:
-            self.teacher.load_state_dict(state["teacher"])
+        if "ema" in state:
+            self.ema.load_state_dict(state["ema"])
+            self.ema.decay = float(state["ema_decay"])
+        else:
+            self.ema.load_state_dict({name: state["model"][name] for name in self.ema.params})
         return int(state["global_step"]), float(state["best_region"])
+
+
+def atomic_torch_save(payload: dict[str, Any], path: str | os.PathLike[str]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        torch.save(payload, tmp)
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            tmp.unlink()

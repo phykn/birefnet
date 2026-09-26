@@ -1,10 +1,8 @@
-import argparse
-
 import pytest
 import torch
 from torch import nn
 
-from scripts.check_gradients import audit, check_size
+from scripts.check_gradients import audit
 from src.model.output import Output
 from src.train.objective import TrainLoss
 
@@ -22,21 +20,20 @@ class TinyModel(nn.Module):
 
 def batch():
     return {
-        "weak": torch.randn(1, 3, 8, 8),
-        "strong": torch.randn(1, 3, 8, 8),
+        "image": torch.randn(1, 3, 8, 8),
         "mask": torch.randint(0, 4, (1, 8, 8)),
         "valid": torch.ones(1, 1, 8, 8),
     }
 
 
-def test_audit_two_views_reaches_gradients_and_releases_hooks():
+def test_audit_single_view_reaches_gradients_and_releases_hooks():
     model = TinyModel().eval()
     before = {name: param.detach().clone() for name, param in model.named_parameters()}
     report = audit(model, batch(), TrainLoss())
     assert report["ok"]
     assert report["reached_tensors"] == 2
     assert report["frozen_tensors"] == 1
-    assert model.views == 2
+    assert model.views == 1
     assert not model.training
     assert report["missing"] == report["nonfinite"] == report["frozen_grad"] == []
     for name, param in model.named_parameters():
@@ -87,9 +84,3 @@ def test_audit_cleans_up_after_forward_error():
         audit(model, batch(), criterion)
     assert not model.training
     assert all(not param._post_accumulate_grad_hooks for param in model.head.parameters())
-
-
-@pytest.mark.parametrize("size", ["0", "-32", "33"])
-def test_size_rejects_invalid_model_dimensions(size):
-    with pytest.raises(argparse.ArgumentTypeError):
-        check_size(size)

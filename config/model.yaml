@@ -1,5 +1,3 @@
 birefnet:
   weight: "weight/BiRefNet-general-epoch_244.pth"
-  channels: [1536, 768, 384, 192]
   num_classes: 4
-  grad_checkpoint: True

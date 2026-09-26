@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .convert import InputMode, convert, normalize
+from .convert import convert, normalize
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,7 @@ def _resize(
 def fit_tensor(
     image: np.ndarray,
     size: int = 1024,
-    mode: InputMode = "rgb",
+    is_sem: bool = False,
     fit: Fit | None = None,
 ) -> tuple[np.ndarray, Fit]:
     fit = fit or plan(*image.shape[:2], size=size)
@@ -60,7 +60,7 @@ def fit_tensor(
             "Fit source shape does not match image: "
             f"fit={(fit.src_h, fit.src_w)}, image={image.shape[:2]}"
         )
-    x = convert(image, mode=mode)
+    x = convert(image, is_sem=is_sem)
     down = fit.dst_h < image.shape[0] or fit.dst_w < image.shape[1]
     interp = cv2.INTER_AREA if down else cv2.INTER_CUBIC
     x = normalize(_resize(x, fit, interp))
@@ -75,10 +75,10 @@ def fit_tensor(
 def fit_image(
     image: np.ndarray,
     size: int = 1024,
-    mode: InputMode = "rgb",
+    is_sem: bool = False,
     fit: Fit | None = None,
 ) -> tuple[np.ndarray, np.ndarray, Fit]:
-    tensor, fit = fit_tensor(image, size=size, mode=mode, fit=fit)
+    tensor, fit = fit_tensor(image, size=size, is_sem=is_sem, fit=fit)
     valid = np.zeros((1, fit.size, fit.size), dtype=np.float32)
     y0, x0 = fit.top, fit.left
     y1, x1 = y0 + fit.dst_h, x0 + fit.dst_w

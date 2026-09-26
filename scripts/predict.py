@@ -31,7 +31,7 @@ def run(model, image_path: Path, output: Path, tiles=(1,), mask_path=None, class
         if target.shape != image.shape[:2]:
             raise ValueError("Image and mask dimensions differ")
         panels.append(("Ground truth", colorize(target, model.num_classes, target != ignore_index)))
-    logits = predict_logits(model, image, size=spec.size, mode=spec.mode, tiles=tiles)
+    logits = predict_logits(model, image, size=spec.size, is_sem=spec.is_sem, tiles=tiles)
     labels = logits.argmax(axis=0).astype(np.uint8)
     colors = colorize(labels, model.num_classes)
     blended = overlay(image, colors)

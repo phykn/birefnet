@@ -35,7 +35,7 @@ async def predict(request: Request, body: PredictRequest) -> PredictResponse:
             output_mode=body.output_mode,
             class_id=body.class_id,
             size=request.app.state.preprocess.size,
-            mode=request.app.state.preprocess.mode,
+            is_sem=request.app.state.preprocess.is_sem,
             tiles=body.tiles,
             overlap=body.overlap,
         )

@@ -31,12 +31,10 @@ def inspect(loader, num_classes: int, ignore_index: int, batches: int, output: P
         counts += np.bincount(masks[valid], minlength=num_classes)
         paths = []
         for item in range(len(masks)):
-            weak = image_from_tensor(batch["weak"][item])
+            image = image_from_tensor(batch["image"][item])
             colors = colorize(masks[item], num_classes, valid[item])
-            panels = [("Weak / input", weak)]
-            if "strong" in batch:
-                panels.append(("Strong", image_from_tensor(batch["strong"][item])))
-            panels.extend([("Mask (gray = ignored)", colors), ("Overlay", overlay(weak, colors)),
+            panels = [("Input", image)]
+            panels.extend([("Mask (gray = ignored)", colors), ("Overlay", overlay(image, colors)),
                            ("Valid pixels", valid[item].astype(np.uint8) * 255)])
             if "cut" in batch:
                 panels.append(("Crop boundaries", (batch["cut"][item, 0].numpy() * 255).astype(np.uint8)))
@@ -58,18 +56,15 @@ def main() -> None:
     parser.add_argument("--config", default="config/train.yaml")
     parser.add_argument("--split", choices=("train", "valid"), default="train")
     parser.add_argument("--batches", type=int, default=2)
-    parser.add_argument("--size", type=int, help="Override preview resolution")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, default=Path("run/checks/data"))
     args = parser.parse_args()
-    if args.batches < 1 or (args.size is not None and args.size < 1):
-        parser.error("batches and size must be positive")
+    if args.batches < 1:
+        parser.error("batches must be positive")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     cfg = load_config(args.config)
-    if args.size is not None:
-        cfg.data.size = args.size
     cfg.loader.num_workers = 0
     cfg.loader.persistent_workers = False
     cfg.loader.pin_memory = False

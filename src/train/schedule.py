@@ -79,8 +79,9 @@ class CosineSchedule(_LRScheduler):
 
     def init_lr(self):
         self.base_lrs = self.min_lrs.copy()
-        for param_group, min_lr in zip(self.optimizer.param_groups, self.min_lrs):
-            param_group["lr"] = min_lr
+        self._last_lr = self.get_lr()
+        for param_group, lr in zip(self.optimizer.param_groups, self._last_lr):
+            param_group["lr"] = lr
 
     def get_lr(self):
         if self.step_in_cycle == -1:
@@ -117,5 +118,6 @@ class CosineSchedule(_LRScheduler):
         self.max_lrs = [
             base_max_lr * (self.gamma**self.cycle) for base_max_lr in self.base_max_lrs
         ]
-        for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
+        self._last_lr = self.get_lr()
+        for param_group, lr in zip(self.optimizer.param_groups, self._last_lr):
             param_group["lr"] = lr

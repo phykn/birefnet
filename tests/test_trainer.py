@@ -12,7 +12,6 @@ from src.prepare.spec import PreprocessSpec
 from src.predict.inference import predict_logits
 from src.train.trainer import Trainer
 from src.train.schedule import CosineSchedule
-from src.train.teacher import Teacher
 
 
 class _DummyModel(nn.Module):
@@ -35,7 +34,7 @@ class _DummyModel(nn.Module):
 
 
 class _DummyCriterion(nn.Module):
-    def forward(self, out, batch, teacher_logit=None, teacher_scale=0.0):
+    def forward(self, out, batch):
         if len(out.logits) > 1:
             logits = out.logits
             seg = sum(logit.mean() ** 2 for logit in logits) / len(logits)
@@ -57,8 +56,7 @@ class _DummyDataset(Dataset):
 
     def __getitem__(self, idx):
         return {
-            "weak": torch.randn(3, 8, 8),
-            "strong": torch.randn(3, 8, 8),
+            "image": torch.randn(3, 8, 8),
             "mask": torch.randint(0, 4, (8, 8)),
             "valid": torch.ones(1, 8, 8),
         }
@@ -77,7 +75,6 @@ def _make_trainer(tmp_path, accum_steps=1, preprocess=None):
         min_lr=1e-4,
         warmup_steps=2,
     )
-    teacher = Teacher(model, decay=0.5, start=0, ramp=1)
     return Trainer(
         model=model,
         train_loader=train_loader,
@@ -85,7 +82,6 @@ def _make_trainer(tmp_path, accum_steps=1, preprocess=None):
         criterion=criterion,
         optimizer=optimizer,
         scheduler=scheduler,
-        teacher=teacher,
         save_dir=str(tmp_path),
         predictor=predict_logits,
         max_grad_norm=1.0,
@@ -128,13 +124,13 @@ def test_trainer_get_batch_wraps_around(tmp_path):
     trainer = _make_trainer(tmp_path)
     for _ in range(6):
         batch = trainer.next_batch()
-        assert "weak" in batch
+        assert "image" in batch
 
 
 def test_trainer_save_writes_full_model_and_resume_state(tmp_path):
     trainer = _make_trainer(
         tmp_path,
-        preprocess=PreprocessSpec(size=640, mode="gray_repeat"),
+        preprocess=PreprocessSpec(is_sem=True),
     )
     trainer.save()
     weights_dir = os.path.join(trainer.save_dir, "weights")
@@ -143,18 +139,18 @@ def test_trainer_save_writes_full_model_and_resume_state(tmp_path):
     assert os.path.exists(os.path.join(weights_dir, "last.train.pth"))
     overlay = torch.load(overlay_path, map_location="cpu", weights_only=True)
     assert overlay["preprocess"] == {
-        "size": 640,
-        "mode": "gray_repeat",
+        "size": 1024,
+        "is_sem": True,
     }
 
 
 def test_trainer_resume_restores_step_model_optimizer_and_scheduler(tmp_path):
-    preprocess = PreprocessSpec(size=64, mode="gray_repeat")
+    preprocess = PreprocessSpec(is_sem=True)
     trainer = _make_trainer(tmp_path, preprocess=preprocess)
     _, updated = trainer.step()
     assert updated
     expected_weight = trainer.model.conv.weight.detach().clone()
-    expected_teacher = trainer.teacher.state_dict()
+    expected_ema = trainer.ema.state_dict()
     expected_lr = trainer.optimizer.param_groups[0]["lr"]
     trainer.best_region = 0.6
     trainer.save()
@@ -166,13 +162,13 @@ def test_trainer_resume_restores_step_model_optimizer_and_scheduler(tmp_path):
     assert torch.allclose(resumed.model.conv.weight, expected_weight)
     assert resumed.optimizer.param_groups[0]["lr"] == expected_lr
     assert resumed.scheduler.step_in_cycle == trainer.scheduler.step_in_cycle
-    for name, value in expected_teacher.items():
-        assert torch.allclose(resumed.teacher.state_dict()[name], value)
+    for name, value in expected_ema.items():
+        assert torch.allclose(resumed.ema.state_dict()[name], value)
 
 
 @pytest.mark.parametrize(
     "preprocess",
-    [PreprocessSpec(size=64), PreprocessSpec(mode="gray_repeat")],
+    [PreprocessSpec(is_sem=True)],
 )
 def test_resume_rejects_preprocess_mismatch_before_loading_weights(tmp_path, preprocess):
     trainer = _make_trainer(tmp_path)
@@ -226,7 +222,7 @@ def test_overflow_skip_keeps_optimizer_dependent_state(tmp_path):
     trainer = _make_trainer(tmp_path)
     trainer.scaler = _SkipScaler()
     weight = trainer.model.conv.weight.detach().clone()
-    teacher = trainer.teacher.state_dict()
+    ema = trainer.ema.state_dict()
     cycle = trainer.scheduler.step_in_cycle
 
     _, updated = trainer.step()
@@ -235,8 +231,8 @@ def test_overflow_skip_keeps_optimizer_dependent_state(tmp_path):
     assert trainer.global_step == 0
     assert trainer.scheduler.step_in_cycle == cycle
     assert torch.allclose(trainer.model.conv.weight, weight)
-    for name, value in teacher.items():
-        assert torch.allclose(trainer.teacher.state_dict()[name], value)
+    for name, value in ema.items():
+        assert torch.allclose(trainer.ema.state_dict()[name], value)
 
 
 def test_training_retries_skipped_update(tmp_path):
@@ -290,7 +286,7 @@ def test_deployment_validation_preserves_class_three(tmp_path):
     mask_path = tmp_path / "mask.png"
     Image.fromarray(np.zeros((8, 12, 3), dtype=np.uint8)).save(image_path)
     Image.fromarray(np.full((8, 12), 3, dtype=np.uint8)).save(mask_path)
-    trainer = _make_trainer(tmp_path, preprocess=PreprocessSpec(size=32))
+    trainer = _make_trainer(tmp_path, preprocess=PreprocessSpec())
     trainer.valid_loader.dataset.data = [(str(image_path), str(mask_path))]
     with torch.no_grad():
         trainer.model.conv.weight.zero_()
@@ -338,7 +334,7 @@ def test_native_prediction_uses_saved_preprocess(monkeypatch, tmp_path):
 
     trainer = _make_trainer(
         tmp_path,
-        preprocess=PreprocessSpec(size=64, mode="gray_features"),
+        preprocess=PreprocessSpec(is_sem=True),
     )
     trainer.valid_loader.dataset.data = [(str(image_path), str(mask_path))]
     captured = {}
@@ -350,16 +346,42 @@ def test_native_prediction_uses_saved_preprocess(monkeypatch, tmp_path):
     trainer.predictor = fake_predict
     list(trainer.predict_native(trainer.valid_loader))
 
-    assert captured == {"size": 64, "mode": "gray_features"}
+    assert captured == {"size": 1024, "is_sem": True}
 
 
-def test_training_without_teacher(tmp_path):
+def test_saves_ema_model_without_changing_live_weights(tmp_path):
     trainer = _make_trainer(tmp_path)
-    trainer.teacher = None
-    losses, updated = trainer.step()
+    initial = trainer.model.conv.weight.detach().clone()
+    _, updated = trainer.step()
     assert updated
+    current = trainer.model.conv.weight.detach().clone()
+    expected = initial * 0.99 + current * 0.01
     trainer.save()
+    saved = torch.load(tmp_path / "weights/last_ema.pth", weights_only=True)
+    torch.testing.assert_close(saved["model"]["conv.weight"], expected)
+    torch.testing.assert_close(trainer.model.conv.weight, current)
+    assert saved["preprocess"]["size"] == 1024
+    assert "optimizer" not in saved
+
+
+def test_resume_without_ema_starts_average_from_restored_weights(tmp_path):
+    trainer = _make_trainer(tmp_path)
+    trainer.step()
+    trainer.save()
+    path = tmp_path / "weights/last.train.pth"
+    saved = torch.load(path, weights_only=True)
+    del saved["ema"]
+    del saved["ema_decay"]
+    torch.save(saved, path)
     resumed = _make_trainer(tmp_path)
-    resumed.teacher = None
-    resumed.load_resume(str(tmp_path / "weights" / "last.train.pth"))
-    assert resumed.global_step == 1
+    resumed.load_resume(str(path))
+    for name, param in resumed.model.named_parameters():
+        torch.testing.assert_close(resumed.ema.params[name], param)
+
+
+
+def test_ema_does_not_add_training_forward_passes(tmp_path):
+    trainer = _make_trainer(tmp_path, accum_steps=2)
+    trainer.model.calls = 0
+    _, updated = trainer.step()
+    assert updated and trainer.model.calls == 2

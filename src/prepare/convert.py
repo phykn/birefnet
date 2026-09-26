@@ -1,9 +1,5 @@
-from typing import Literal
-
 import cv2
 import numpy as np
-
-InputMode = Literal["rgb", "gray_repeat", "gray_features"]
 
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
@@ -29,7 +25,7 @@ def _to_rgb(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported channel count: {image.shape[2]}")
 
 
-def _to_gray(image: np.ndarray) -> np.ndarray:
+def to_gray(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(_to_rgb(image), cv2.COLOR_RGB2GRAY)
 
 
@@ -51,18 +47,19 @@ def _enhance(gray: np.ndarray) -> np.ndarray:
     return clahe.apply(_zscore(x))
 
 
-def _sharpen(gray: np.ndarray) -> np.ndarray:
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    return cv2.addWeighted(gray, 1.5, blur, -0.5, 0)
+def _percentile(gray: np.ndarray) -> np.ndarray:
+    low, high = np.percentile(gray, (1, 99))
+    if high <= low:
+        return np.zeros_like(gray)
+    x = (gray.astype(np.float32) - low) / (high - low)
+    return np.rint(np.clip(x, 0, 1) * 255).astype(np.uint8)
 
 
-def convert(image: np.ndarray, mode: InputMode = "rgb") -> np.ndarray:
+def convert(image: np.ndarray, is_sem: bool = False) -> np.ndarray:
+    if not isinstance(is_sem, bool):
+        raise ValueError("is_sem must be a bool")
     rgb = _to_rgb(image)
-    if mode == "rgb":
+    if not is_sem:
         return rgb
-    gray = _to_gray(rgb)
-    if mode == "gray_repeat":
-        return np.repeat(gray[..., None], 3, axis=2)
-    if mode == "gray_features":
-        return np.stack([gray, _enhance(gray), _sharpen(gray)], axis=-1)
-    raise ValueError(f"Unsupported input mode: {mode!r}")
+    gray = to_gray(rgb)
+    return np.stack([gray, _percentile(gray), _enhance(gray)], axis=-1)

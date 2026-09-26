@@ -2,11 +2,13 @@ import os
 from glob import glob
 from typing import Any
 
+import torch
 from torch.utils.data import DataLoader
 
 from ..data.dataset import MaskDataset
 from ..data.pairs import pair_files
 from ..data.split import Splits, make, pack, restore
+from ..prepare.spec import PreprocessSpec
 
 
 def _loader(cfg: Any, dataset: MaskDataset, shuffle: bool) -> DataLoader:
@@ -23,7 +25,7 @@ def _loader(cfg: Any, dataset: MaskDataset, shuffle: bool) -> DataLoader:
         "batch_size": int(cfg.loader.batch),
         "shuffle": shuffle,
         "num_workers": workers,
-        "pin_memory": bool(cfg.loader.pin_memory),
+        "pin_memory": bool(cfg.loader.get("pin_memory", torch.cuda.is_available())),
     }
     if workers > 0:
         prefetch = int(cfg.loader.get("prefetch_factor", 2))
@@ -62,20 +64,21 @@ def build(
     train_dataset = MaskDataset(
         data=train_data,
         **label_options,
-        size=cfg.data.size,
+        size=PreprocessSpec.size,
         train=True,
-        mode=cfg.data.get("mode", "rgb"),
-        global_prob=float(cfg.data.get("global_prob", 0.3)),
-        boundary_prob=float(cfg.data.get("boundary_prob", 0.5)),
-        weak=(cfg.augment.weak.brightness, cfg.augment.weak.contrast),
-        strong=(cfg.augment.strong.brightness, cfg.augment.strong.contrast),
+        is_sem=cfg.data.get("is_sem", False),
+        crop_prob=float(cfg.data.get("crop_prob", 0.7)),
+        min_crop_size=cfg.data.get("min_crop_size", 256),
+        brightness=cfg.augment.brightness,
+        contrast=cfg.augment.contrast,
+        masking_prob=float(cfg.augment.get("masking_prob", 0.0)),
     )
     valid_dataset = MaskDataset(
         data=valid_data,
         **label_options,
-        size=cfg.data.size,
+        size=PreprocessSpec.size,
         train=False,
-        mode=cfg.data.get("mode", "rgb"),
+        is_sem=cfg.data.get("is_sem", False),
     )
 
     train_loader = _loader(cfg, train_dataset, shuffle=True)

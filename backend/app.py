@@ -20,7 +20,7 @@ def build_app(
     app = FastAPI(title="BiRefNet Multiclass API")
     app.state.model = model
     app.state.device = device
-    app.state.preprocess = preprocess or PreprocessSpec()
+    app.state.preprocess = read_preprocess(model) if preprocess is None else preprocess
     app.state.predict_sem = asyncio.Semaphore(1)
     app.include_router(router)
     return app

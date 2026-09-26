@@ -73,19 +73,10 @@ def test_deep_supervision_boundary_is_not_diluted():
     assert torch.allclose(parts["boundary"], loss_fn.seg.compute(preds[-1], target, valid)["boundary"])
 
 
-def test_teacher_softmax_only_downweights_confident_conflicting_labels():
-    teacher = torch.tensor([[[[0., 40.]], [[40., 0.]], [[0., 0.]], [[0., 0.]]]])
-    target = torch.zeros(1, 1, 2, dtype=torch.long)
-    weight, conf, prob = TrainLoss()._weigh(teacher, target, 1.)
-    assert torch.allclose(weight, torch.tensor([[[[.25, 1.]]]]))
-    assert torch.allclose(prob.sum(1), torch.ones_like(target, dtype=torch.float32))
-    assert (conf > .99).all()
-
-
-def test_two_view_multiscale_and_binary_gdt_cpu_backward():
-    preds = [torch.randn(4, 4, size, size, requires_grad=True) for size in (4, 8)]
-    edge = torch.randn(4, 1, 8, 8, requires_grad=True)
-    label = torch.rand(4, 1, 8, 8, requires_grad=True)
+def test_single_view_multiscale_and_binary_gdt_cpu_backward():
+    preds = [torch.randn(2, 4, size, size, requires_grad=True) for size in (4, 8)]
+    edge = torch.randn(2, 1, 8, 8, requires_grad=True)
+    label = torch.rand(2, 1, 8, 8, requires_grad=True)
     batch = {"mask": torch.randint(0, 4, (2, 8, 8)), "valid": torch.ones(2, 1, 8, 8)}
     parts, loss = TrainLoss()(Output(preds, ([edge], [label])), batch)
     assert torch.isfinite(loss) and parts["aux"] > 0

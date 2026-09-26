@@ -26,6 +26,27 @@ def test_starts_at_min_lr():
     assert _lr(opt) == 0.0
 
 
+def test_without_warmup_starts_at_max_lr():
+    opt, sched = _make(max_lr=1.0, min_lr=0.01, warmup=0, total=20)
+    assert _lr(opt) == 1.0
+    sched.step()
+    assert 0.01 < _lr(opt) < 1.0
+
+
+def test_last_lr_matches_optimizer_before_and_after_resume():
+    opt, sched = _make()
+    assert sched.get_last_lr() == [_lr(opt)]
+    for _ in range(7):
+        sched.step()
+        assert sched.get_last_lr() == [_lr(opt)]
+    restored_opt, restored = _make()
+    restored_opt.load_state_dict(opt.state_dict())
+    restored.load_state_dict(sched.state_dict())
+    sched.step()
+    restored.step()
+    assert restored.get_last_lr() == sched.get_last_lr() == [_lr(restored_opt)]
+
+
 def test_warmup_reaches_max_lr_after_warmup_steps():
     opt, sched = _make(max_lr=1.0, warmup=5, total=20)
     for _ in range(5):

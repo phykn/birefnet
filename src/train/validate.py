@@ -46,14 +46,14 @@ class Validator:
         for cpu_batch in self.valid_loader:
             batch = {k: v.to(self.device) for k, v in cpu_batch.items()}
             with torch.amp.autocast(self.device.type, dtype=self.amp_dtype, enabled=self.use_amp):
-                out = self.model(batch["weak"])
+                out = self.model(batch["image"])
                 losses, _ = self.criterion(out, batch)
             logits = F.interpolate(out.logits[-1].float(), size=batch["mask"].shape[-2:],
                                    mode="bilinear", align_corners=False)
             matrix += confusion_matrix(logits, batch["mask"], batch["valid"],
                                        num_classes=self.model.num_classes,
                                        ignore_index=self.ignore_index).cpu()
-            size = batch["weak"].shape[0]
+            size = batch["image"].shape[0]
             count += size
             for key, value in losses.items():
                 totals[key] = totals.get(key, 0.0) + float(value) * size
@@ -68,7 +68,7 @@ class Validator:
         self.model.eval()
         for image_path, mask_path in pairs:
             logits = self.predictor(self.model, read_image(image_path),
-                                    size=self.preprocess.size, mode=self.preprocess.mode)
+                                    size=self.preprocess.size, is_sem=self.preprocess.is_sem)
             yield logits.argmax(axis=0), read_mask(mask_path)
 
     def validate_deploy(self) -> dict[str, float]:

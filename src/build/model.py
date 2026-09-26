@@ -8,8 +8,7 @@ from ..model.checkpoint import load_base, read_checkpoint
 
 def build(cfg: Any, load_pretrained: bool = True) -> BiRefNet:
     model = BiRefNet(
-        channels=list(cfg.birefnet.channels),
-        grad_checkpoint=cfg.birefnet.grad_checkpoint,
+        **({"channels": list(cfg.birefnet.channels)} if "channels" in cfg.birefnet else {}),
         num_classes=cfg.birefnet.get("num_classes", 4),
     )
     path = str(cfg.birefnet.weight) if cfg.birefnet.get("weight") else None
@@ -17,12 +16,6 @@ def build(cfg: Any, load_pretrained: bool = True) -> BiRefNet:
         state = torch.load(path, map_location="cpu", weights_only=True)
         load_base(model, state)
         print(f"[LOAD] {path}")
-    train = cfg.get("train", {})
-    model.configure_finetune(
-        mode=train.get("mode", "decoder"),
-        backbone_stages=train.get("backbone_stages", 1),
-        freeze_bn=train.get("freeze_bn", True),
-    )
     return model
 
 
@@ -31,5 +24,8 @@ def build_predictor(cfg: Any, path: str, device: torch.device) -> BiRefNet:
     checkpoint = read_checkpoint(path, num_classes)
     model = build(cfg, load_pretrained=False)
     model.load_state_dict(checkpoint["model"], strict=True)
-    model.loaded_meta = {key: value for key, value in checkpoint.items() if key != "model"}
+    model.loaded_meta = {
+        key: value for key, value in checkpoint.items()
+        if key not in {"model", "optimizer", "scheduler", "scaler", "ema", "teacher"}
+    }
     return model.to(device).eval()

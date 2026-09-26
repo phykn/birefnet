@@ -1,6 +1,5 @@
 import random
 
-import cv2
 import numpy as np
 
 
@@ -21,29 +20,18 @@ def crop(
     image: np.ndarray,
     mask: np.ndarray,
     size: int,
-    global_prob: float,
-    boundary_prob: float,
+    crop_prob: float,
+    min_size: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     height, width = image.shape[:2]
-    if random.random() < global_prob or (height <= size and width <= size):
+    if random.random() >= crop_prob:
         return image, mask, np.zeros(mask.shape[:2], dtype=np.uint8)
 
-    crop_h = min(size, height)
-    crop_w = min(size, width)
-    if random.random() < boundary_prob:
-        labels = mask.astype(np.float32)
-        kernel = np.ones((3, 3), dtype=np.uint8)
-        boundary = cv2.dilate(labels, kernel) != cv2.erode(labels, kernel)
-        ys, xs = np.nonzero(boundary)
-    else:
-        ys = xs = np.empty(0, dtype=np.int64)
-
-    if len(ys):
-        pick = random.randrange(len(ys))
-        center_y, center_x = int(ys[pick]), int(xs[pick])
-    else:
-        center_y = random.randrange(height)
-        center_x = random.randrange(width)
+    side = random.randint(min_size, size)
+    crop_h = min(side, height)
+    crop_w = min(side, width)
+    center_y = random.randrange(height)
+    center_x = random.randrange(width)
 
     top = min(max(center_y - crop_h // 2, 0), height - crop_h)
     left = min(max(center_x - crop_w // 2, 0), width - crop_w)
@@ -71,3 +59,30 @@ def jitter(image: np.ndarray, limits: tuple[float, float]) -> np.ndarray:
     x = image.astype(np.float32) / 255.0
     x = (x - 0.5) * (1.0 + contrast) + 0.5 + bright
     return np.rint(np.clip(x, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def edge_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    ignore_index: int = 255,
+) -> tuple[np.ndarray, np.ndarray]:
+    roi = mask != ignore_index
+    count = np.count_nonzero(roi)
+    if count == 0:
+        return image, mask
+    height, width = mask.shape
+    # A bounded retry also handles sparse ROIs at the image border.
+    for _ in range(32):
+        top, bottom = (random.randint(0, height // 4) for _ in range(2))
+        left, right = (random.randint(0, width // 4) for _ in range(2))
+        region = np.s_[top:height - bottom, left:width - right]
+        if np.count_nonzero(roi[region]) * 2 < count:
+            continue
+        hidden = np.ones(mask.shape, dtype=bool)
+        hidden[region] = False
+        value = random.choice((0, 255, 127, random.randint(0, 255)))
+        image, mask = image.copy(), mask.copy()
+        image[hidden] = value
+        mask[hidden] = ignore_index
+        return image, mask
+    return image, mask

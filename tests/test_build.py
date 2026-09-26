@@ -43,8 +43,7 @@ def test_build_loaders_rejects_unpaired_stems(tmp_path):
                 "valid_ratio": 0.2,
             },
             "augment": {
-                "weak": {"brightness": 0.2, "contrast": 0.2},
-                "strong": {"brightness": 0.4, "contrast": 0.4},
+                "brightness": 0.2, "contrast": 0.4,
             },
             "loader": {"batch": 1, "num_workers": 0, "pin_memory": False},
         }
@@ -82,8 +81,7 @@ def test_build_loaders_restores_saved_split_membership(tmp_path):
                 "valid_ratio": 0.2,
             },
             "augment": {
-                "weak": {"brightness": 0.2, "contrast": 0.2},
-                "strong": {"brightness": 0.4, "contrast": 0.4},
+                "brightness": 0.2, "contrast": 0.4,
             },
             "loader": {"batch": 1, "num_workers": 0, "pin_memory": False},
         }
@@ -103,3 +101,20 @@ def test_create_run_dir_never_reuses_existing_run(tmp_path):
     assert first != second
     assert first.is_dir()
     assert second.is_dir()
+
+
+@pytest.mark.parametrize("workers, cuda", [(0, False), (2, True)])
+def test_loader_defaults_follow_workers_and_device(monkeypatch, workers, cuda):
+    from src.build.data import _loader
+
+    monkeypatch.setattr("src.build.data.torch.cuda.is_available", lambda: cuda)
+    monkeypatch.setattr("src.build.data.DataLoader", lambda **options: options)
+    cfg = OmegaConf.create({"loader": {"batch": 1, "num_workers": workers}})
+    options = _loader(cfg, [], shuffle=False)
+    assert options["pin_memory"] is cuda
+    if workers:
+        assert options["persistent_workers"] is True
+        assert options["prefetch_factor"] == 2
+    else:
+        assert "persistent_workers" not in options
+        assert "prefetch_factor" not in options

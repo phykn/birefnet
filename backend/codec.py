@@ -28,18 +28,13 @@ def decode(text: str) -> np.ndarray:
     try:
         with Image.open(BytesIO(raw)) as source:
             width, height = source.size
-    except (Image.DecompressionBombError, OSError, UnidentifiedImageError) as exc:
+            if width * height > MAX_PIXELS:
+                raise ImageLimitError("image dimensions are too large")
+            return np.asarray(source.convert("RGB"), dtype=np.uint8)
+    except Image.DecompressionBombError as exc:
+        raise ImageLimitError("image dimensions are too large") from exc
+    except (OSError, UnidentifiedImageError) as exc:
         raise ValueError("invalid image") from exc
-    if width * height > MAX_PIXELS:
-        raise ImageLimitError("image dimensions are too large")
-
-    image = cv2.imdecode(
-        np.frombuffer(raw, dtype=np.uint8),
-        cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION,
-    )
-    if image is None:
-        raise ValueError("invalid image")
-    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
 def encode(mask: np.ndarray, indexed: bool = False) -> str:

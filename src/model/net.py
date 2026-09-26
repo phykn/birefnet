@@ -22,9 +22,6 @@ class BiRefNet(nn.Module):
         if isinstance(num_classes, bool) or not isinstance(num_classes, int) or num_classes < 1:
             raise ValueError("num_classes must be a positive integer")
         self.num_classes = num_classes
-        self.freeze_bn = True
-        self.finetune_mode = "decoder"
-        self.backbone_stages = 1
 
         channels = [channel * 2 for channel in channels]
 
@@ -42,29 +39,12 @@ class BiRefNet(nn.Module):
         )
         self.configure_finetune()
 
-    def configure_finetune(
-        self, mode: str = "decoder", backbone_stages: int = 1, freeze_bn: bool = True
-    ) -> None:
-        if mode not in {"decoder", "partial", "full"}:
-            raise ValueError("train.mode must be decoder, partial, or full")
-        if mode == "partial" and (
-            isinstance(backbone_stages, bool) or not isinstance(backbone_stages, int)
-            or not 1 <= backbone_stages <= len(self.bb.layers)
-        ):
-            raise ValueError("backbone_stages must select 1 to 4 final backbone stages")
-        self.finetune_mode = mode
-        self.backbone_stages = backbone_stages
-        self.freeze_bn = freeze_bn
-        for param in self.parameters():
-            param.requires_grad_(mode == "full")
+    def configure_finetune(self) -> None:
+        for param in self.bb.parameters():
+            param.requires_grad_(False)
         for module in (self.squeeze_module, self.decoder):
             for param in module.parameters():
                 param.requires_grad_(True)
-        if mode == "partial":
-            for idx in range(len(self.bb.layers) - backbone_stages, len(self.bb.layers)):
-                for module in (self.bb.layers[idx], getattr(self.bb, f"norm{idx}")):
-                    for param in module.parameters():
-                        param.requires_grad_(True)
         self.train(self.training)
 
     @property
@@ -78,16 +58,10 @@ class BiRefNet(nn.Module):
 
     def train(self, mode: bool = True) -> "BiRefNet":
         super().train(mode)
-        if mode and self.finetune_mode != "full":
-            self.bb.eval()
-            if self.finetune_mode == "partial":
-                for idx in range(len(self.bb.layers) - self.backbone_stages, len(self.bb.layers)):
-                    self.bb.layers[idx].train()
-                    getattr(self.bb, f"norm{idx}").train()
-        if self.freeze_bn:
-            for module in self.modules():
-                if isinstance(module, nn.modules.batchnorm._BatchNorm):
-                    module.eval()
+        self.bb.eval()
+        for module in self.modules():
+            if isinstance(module, nn.modules.batchnorm._BatchNorm):
+                module.eval()
         return self
 
     def encode(
