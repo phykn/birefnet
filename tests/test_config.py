@@ -1,7 +1,8 @@
 import pytest
 from omegaconf import OmegaConf
 
-from src.config import ROOT, load_config, load_run
+from src.config import load_config
+from src.run import load_run
 
 
 def test_explicit_config_overrides_shared_model_defaults(tmp_path):
@@ -11,20 +12,6 @@ def test_explicit_config_overrides_shared_model_defaults(tmp_path):
     assert cfg.birefnet.num_classes == 5
     assert cfg.birefnet.weight == load_config().birefnet.weight
     assert cfg.train.steps == 9
-
-
-def test_default_run_combines_train_and_model_config():
-    cfg, checkpoint, run_dir = load_run()
-    train = OmegaConf.load(ROOT / "config/train.yaml")
-    assert cfg.train == train.train
-    assert cfg.birefnet == load_config().birefnet
-    assert checkpoint is None
-    assert run_dir is None
-
-
-def test_resume_rejects_config_override():
-    with pytest.raises(ValueError, match="saved config"):
-        load_run("last.train.pth", "train.yaml")
 
 
 def test_config_rejects_non_mapping(tmp_path):

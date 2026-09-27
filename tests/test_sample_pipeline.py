@@ -7,7 +7,8 @@ from PIL import Image
 from src.build.data import build as build_data
 from src.build.model import build_predictor
 from src.build.trainer import build as build_trainer
-from src.config import ROOT, load_run
+from src.config import ROOT
+from src.run import load_run
 from src.prepare.spec import PreprocessSpec
 from test_model import tiny_model
 

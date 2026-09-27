@@ -132,8 +132,11 @@ owns shared channel conversion and resize/padding geometry. `src/model/`
 owns the network and model checkpoint format, while `src/train/` owns losses,
 optimization, EMA, validation, and atomic training checkpoint writes.
 `src/predict/` restores predictions and blends tiles; `src/build/` assembles
-these components from configuration. `backend/` contains the HTTP API and
-`scripts/` contains inspection tools.
+these components from configuration, including the loss shared by training
+and gradient inspection. `src/run.py` owns training run creation, saved config
+and split restoration, and the training launch; `run_train.py` handles CLI
+arguments. `src/config.py` reads and migrates config values. `backend/` contains
+the HTTP API and `scripts/` contains inspection tools.
 
 ```bash
 python -m pytest -q

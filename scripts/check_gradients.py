@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.build.data import build as build_data
+from src.build.loss import build as build_loss
 from src.build.model import build as build_model
 from src.config import load_config
-from src.train.objective import TrainLoss
 
 
 def audit(model, batch, criterion) -> dict:
@@ -92,15 +92,7 @@ def main() -> int:
     device = torch.device(args.device)
     batch = {key: value.to(device) for key, value in next(iter(loader)).items()}
     model = build_model(cfg).to(device)
-    criterion = TrainLoss(
-        lambda_cls=cfg.loss.lambda_cls,
-        lambda_region=cfg.loss.lambda_region,
-        lambda_boundary=cfg.loss.lambda_boundary,
-        boundary_radius=cfg.loss.boundary_radius,
-        lambda_aux=cfg.loss.lambda_aux,
-        num_classes=cfg.birefnet.num_classes,
-        ignore_index=cfg.data.get("ignore_index", 255),
-    ).to(device)
+    criterion = build_loss(cfg).to(device)
     report = audit(model, batch, criterion)
     report.update(config=str(args.config), device=str(device), size=batch["image"].shape[-1])
     args.output.parent.mkdir(parents=True, exist_ok=True)

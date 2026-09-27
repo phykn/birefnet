@@ -91,3 +91,8 @@ def test_single_view_without_gdt_still_deep_supervises():
     loss.backward()
     assert parts["aux"] == 0
     assert all(pred.grad is not None for pred in preds)
+
+
+def test_empty_logits_raise_value_error():
+    with pytest.raises(ValueError, match="at least one segmentation logit"):
+        TrainLoss()(Output([]), {"mask": torch.zeros(1, 8, 8, dtype=torch.long)})

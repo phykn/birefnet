@@ -17,8 +17,6 @@ class TrainLoss(nn.Module):
         self.ignore_index = ignore_index
 
     def _segment(self, logits, target, valid, cut=None):
-        if not logits:
-            raise ValueError("output must contain at least one segmentation logit")
         totals = {}
         for index, pred in enumerate(logits):
             parts = self.seg.compute(pred, target, valid, cut,
@@ -47,6 +45,8 @@ class TrainLoss(nn.Module):
         return loss / len(preds)
 
     def forward(self, out: Output, batch):
+        if not out.logits:
+            raise ValueError("output must contain at least one segmentation logit")
         target = batch["mask"]
         valid = batch.get("valid", torch.ones_like(target[:, None], dtype=torch.float32))
         valid = valid * (target[:, None] != self.ignore_index)

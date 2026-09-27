@@ -30,6 +30,18 @@ def test_training_import_does_not_import_prediction_or_cli():
         "assert not any(name.startswith('src.predict') for name in sys.modules)\n"
         "assert 'run_train' not in sys.modules\n"
         "assert 'run_api' not in sys.modules\n"
+        "assert 'src.run' not in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", code], cwd=root, check=True)
+
+
+def test_config_import_does_not_load_training_or_model():
+    root = Path(__file__).resolve().parents[1]
+    code = (
+        "import sys\n"
+        "from src.config import load_config, read_config\n"
+        "for prefix in ('src.build', 'src.train', 'src.model', 'src.run'):\n"
+        "    assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules)\n"
     )
     subprocess.run([sys.executable, "-c", code], cwd=root, check=True)
 

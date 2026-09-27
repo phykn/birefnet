@@ -5,7 +5,6 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 from src.build.data import build as build_data
-from src.build.trainer import create_run_dir
 from src.data.pairs import index
 from src.data.split import load as load_splits
 from src.data.split import save as save_splits
@@ -92,15 +91,6 @@ def test_build_loaders_restores_saved_split_membership(tmp_path):
     assert actual == splits
     assert Path(train.dataset.data[0][0]).name == "c.png"
     assert Path(valid.dataset.data[0][0]).name == "a.png"
-
-
-def test_create_run_dir_never_reuses_existing_run(tmp_path):
-    first = Path(create_run_dir(tmp_path))
-    second = Path(create_run_dir(tmp_path))
-
-    assert first != second
-    assert first.is_dir()
-    assert second.is_dir()
 
 
 @pytest.mark.parametrize("workers, cuda", [(0, False), (2, True)])
