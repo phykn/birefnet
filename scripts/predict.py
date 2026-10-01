@@ -12,18 +12,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts._preview import colorize, overlay, save_labels, save_preview
-from src.build.model import build_predictor
-from src.config import load_config
 from src.data.image import read_image, read_mask
-from src.predict.inference import predict_logits
+from src.predict.inference import predict_logits, probabilities
+from src.predict.model import load as load_model, load_run_config
 from src.prepare.spec import PreprocessSpec
 
 
 def run(model, image_path: Path, output: Path, tiles=(1,), mask_path=None, class_id=None,
-        ignore_index=255) -> dict:
+        ignore_index=None) -> dict:
     if class_id is not None and not 0 <= class_id < model.num_classes:
         raise ValueError("class_id must be in [0, num_classes)")
-    spec = PreprocessSpec.from_meta(getattr(model, "loaded_meta", None))
+    meta = getattr(model, "loaded_meta", None)
+    spec = PreprocessSpec.from_meta(meta)
+    if ignore_index is None:
+        ignore_index = (meta or {}).get("ignore_index", 255)
     image = read_image(str(image_path))
     panels = [("Input", image)]
     if mask_path is not None:
@@ -41,8 +43,7 @@ def run(model, image_path: Path, output: Path, tiles=(1,), mask_path=None, class
     Image.fromarray(blended).save(output / "overlay.png")
     save_preview(panels, output / "preview.png")
     if class_id is not None:
-        probs = np.exp(logits - logits.max(axis=0, keepdims=True))
-        probs /= probs.sum(axis=0, keepdims=True)
+        probs = probabilities(logits)
         Image.fromarray(np.rint(probs[class_id] * 255).astype(np.uint8)).save(output / f"probability_{class_id}.png")
     report = {"image": str(image_path), "shape": list(labels.shape), "num_classes": model.num_classes,
               "preprocess": spec.to_meta(), "tiles": list(tiles),
@@ -62,11 +63,9 @@ def main() -> None:
     parser.add_argument("--class-id", type=int, help="Also save this class's probability PNG")
     parser.add_argument("--output", type=Path, default=Path("run/checks/predict"))
     args = parser.parse_args()
-    saved_config = args.weight.parent.parent / "config.yaml"
-    cfg = load_config(args.config or (saved_config if saved_config.is_file() else None))
-    model = build_predictor(cfg, str(args.weight), torch.device(args.device))
-    report = run(model, args.image, args.output, args.tiles, args.mask, args.class_id,
-                 int(cfg.get("data", {}).get("ignore_index", 255)))
+    cfg = load_run_config(args.weight, args.config)
+    model = load_model(cfg, args.weight, torch.device(args.device))
+    report = run(model, args.image, args.output, args.tiles, args.mask, args.class_id)
     print(f"Class pixel counts: {report['class_pixels']}")
     print(f"Labels, overlay, preview and summary: {args.output.resolve()}")
 

@@ -112,7 +112,8 @@ python scripts/predict.py --weight run/<run-id>/weights/best_miou.pth --image da
 Outputs are saved under `run/checks/`. Use each script's `--help` for options.
 For prediction, add `--mask` to display ground truth, `--tiles 1 3` for tiled inference,
 or `--class-id 3` to save a class probability PNG.
-Prediction reuses the saved preprocessing settings. Palette indices in `labels.png` are class IDs.
+Prediction reuses the saved preprocessing settings and ignored-label index.
+Palette indices in `labels.png` are class IDs.
 
 ## API
 
@@ -121,17 +122,21 @@ python run_api.py --host 127.0.0.1 --port 8000 --weight run/<run-id>/weights/bes
 ```
 
 Open `http://127.0.0.1:8000/docs` for the API documentation. Send `base64_str` to `POST /predict` to receive a base64-encoded class ID PNG.
-Use `--device cuda` for GPU inference and `--config run/<run-id>/config.yaml` for a nondefault class configuration.
+Use `--device cuda` for GPU inference. Both the API and prediction script default
+to the checkpoint's run config when available, then model defaults. `--config`
+selects an explicit configuration.
 The API reads the checkpoint's preprocessing settings by default and uses the
 same Pillow RGB decoding as the training loader, including for 16-bit PNGs.
 
 ## Development
 
 `src/data/` pairs samples and applies training augmentation; `src/prepare/`
-owns shared channel conversion and resize/padding geometry. `src/model/`
+owns shared channel conversion and resize/padding geometry; `Fit` applies the
+same geometry to images, masks, and native-size restoration. `src/model/`
 owns the network and model checkpoint format, while `src/train/` owns losses,
 optimization, EMA, validation, and atomic training checkpoint writes.
-`src/predict/` restores predictions and blends tiles; `src/build/` assembles
+`src/predict/` loads inference models and their run configuration, restores
+predictions, and blends tiles; `src/build/` assembles
 these components from configuration, including the loss shared by training
 and gradient inspection. `src/run.py` owns training run creation, saved config
 and split restoration, and the training launch; `run_train.py` handles CLI

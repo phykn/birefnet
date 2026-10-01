@@ -131,6 +131,12 @@ def predict_logits(
     return total
 
 
+def probabilities(logits: np.ndarray) -> np.ndarray:
+    probs = np.exp(logits - logits.max(axis=0, keepdims=True))
+    probs /= probs.sum(axis=0, keepdims=True)
+    return probs
+
+
 def predict(
     model: torch.nn.Module,
     image: np.ndarray,
@@ -158,8 +164,7 @@ def predict(
     )
     if output_mode == "labels":
         return logits.argmax(axis=0).astype(np.uint8)
-    probs = np.exp(logits - logits.max(axis=0, keepdims=True))
-    probs /= probs.sum(axis=0, keepdims=True)
+    probs = probabilities(logits)
     if class_id is None:
         return probs
     return np.rint(probs[class_id] * 255.0).astype(np.uint8)

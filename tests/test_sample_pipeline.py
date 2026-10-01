@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 
 from src.build.data import build as build_data
-from src.build.model import build_predictor
+from src.predict.model import load as load_model
 from src.build.trainer import build as build_trainer
 from src.config import ROOT
 from src.run import load_run
@@ -57,7 +57,7 @@ def test_sample_palette_pairs_and_cpu_training_resume(tmp_path, tiny_model, monk
     with torch.inference_mode():
         expected = tiny_model.eval()(image).logits[-1]
         for name in ("last.pth", "last.train.pth", "best_miou.pth"):
-            model = build_predictor(cfg, str(tmp_path / "weights" / name), torch.device("cpu"))
+            model = load_model(cfg, tmp_path / "weights" / name, torch.device("cpu"))
             torch.testing.assert_close(model(image).logits[-1], expected, rtol=0, atol=0)
             assert PreprocessSpec.from_meta(model.loaded_meta) == trainer.preprocess
             assert not {"optimizer", "scheduler", "scaler", "ema"} & model.loaded_meta.keys()
@@ -86,6 +86,6 @@ def test_ema_checkpoint_loads_for_inference(tmp_path, tiny_model):
     atomic_torch_save(payload, path)
     cfg, _, _ = load_run()
     cfg.birefnet.channels = [32, 16, 8, 4]
-    restored = build_predictor(cfg, str(path), torch.device("cpu"))
+    restored = load_model(cfg, path, torch.device("cpu"))
     with torch.inference_mode():
         assert restored(torch.randn(1, 3, 64, 64)).logits[-1].shape == (1, 4, 64, 64)

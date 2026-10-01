@@ -68,6 +68,22 @@ def test_prediction_rejects_bad_class_before_reading_image(tmp_path):
         run(ConstantModel(), Path("missing.png"), tmp_path, class_id=4)
 
 
+@pytest.mark.parametrize("stored, override", [(254, None), (254, 253), (None, None)])
+def test_prediction_uses_checkpoint_ignore_index_for_ground_truth(tmp_path, stored, override):
+    model = ConstantModel()
+    if stored is not None:
+        model.loaded_meta["ignore_index"] = stored
+    image, mask = tmp_path / "input.png", tmp_path / "mask.png"
+    Image.new("RGB", (12, 8)).save(image)
+    ignored = override if override is not None else (stored if stored is not None else 255)
+    Image.new("L", (12, 8), ignored).save(mask)
+
+    report = run(model, image, tmp_path / "out", mask_path=mask, ignore_index=override)
+
+    assert report["shape"] == [8, 12]
+    assert (tmp_path / "out/preview.png").is_file()
+
+
 def test_prediction_rejects_misaligned_ground_truth(tmp_path):
     image, mask = tmp_path / "input.png", tmp_path / "mask.png"
     Image.new("RGB", (12, 8)).save(image)

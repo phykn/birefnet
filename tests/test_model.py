@@ -141,7 +141,7 @@ def test_checkpointed_basic_layer_keeps_checkpoint_with_grad(monkeypatch):
 
 def test_full_checkpoint_predictor_skips_missing_base_weights(tiny_model, tmp_path):
     from omegaconf import OmegaConf
-    from src.build.model import build_predictor
+    from src.predict.model import load as load_model
 
     path = tmp_path / "model.pth"
     torch.save({
@@ -153,7 +153,7 @@ def test_full_checkpoint_predictor_skips_missing_base_weights(tiny_model, tmp_pa
         "weight": "absent_base.pth", "channels": [32, 16, 8, 4],
         "grad_checkpoint": False, "num_classes": 4,
     }})
-    loaded = build_predictor(cfg, str(path), torch.device("cpu"))
+    loaded = load_model(cfg, str(path), torch.device("cpu"))
     assert loaded.training is False
     assert loaded.loaded_meta["preprocess"] == {"size": 1024}
     assert "teacher" not in loaded.loaded_meta

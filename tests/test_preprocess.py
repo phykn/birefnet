@@ -38,6 +38,12 @@ def test_mask_resize_stays_binary_and_matches_valid_geometry():
     assert prepared.shape == (1, 32, 32)
 
 
+def test_mask_fit_rejects_source_geometry_mismatch():
+    fit = plan(15, 30, size=32)
+    with pytest.raises(ValueError, match="source shape"):
+        fit_mask(np.zeros((15, 20), dtype=np.int64), fit)
+
+
 def test_restore_logit_returns_original_shape_and_removes_padding():
     image = np.zeros((17, 43, 3), dtype=np.uint8)
     _, _, fit = fit_image(image, size=32)
