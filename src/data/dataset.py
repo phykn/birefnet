@@ -12,7 +12,7 @@ from .pairs import Pair
 class MaskDataset:
     def __init__(
         self,
-        data: list[Pair],
+        pairs: list[Pair],
         size: int = 1024,
         train: bool = False,
         brightness: float = 0.2,
@@ -28,7 +28,7 @@ class MaskDataset:
             raise ValueError("crop_prob must be in [0, 1]")
         if not 0.0 <= masking_prob <= 1.0:
             raise ValueError("masking_prob must be in [0, 1]")
-        self.data = data
+        self.pairs = pairs
         self.size = int(size)
         self.train = train
         if train and (type(min_crop_size) is not int or not 1 <= min_crop_size <= self.size):
@@ -45,12 +45,8 @@ class MaskDataset:
         self.ignore_index = int(ignore_index)
         self.masking_prob = float(masking_prob)
 
-    @property
-    def pairs(self) -> list[Pair]:
-        return self.data
-
     def __len__(self) -> int:
-        return len(self.data)
+        return len(self.pairs)
 
     def __getitem__(self, index: int) -> dict[str, np.ndarray]:
         image, mask = self._load(index)
@@ -89,7 +85,7 @@ class MaskDataset:
         return sample
 
     def _load(self, index: int) -> tuple[np.ndarray, np.ndarray]:
-        image_path, mask_path = self.data[index]
+        image_path, mask_path = self.pairs[index]
         image = read_image(image_path)
         mask = read_mask(mask_path)
         invalid = (mask != self.ignore_index) & ((mask < 0) | (mask >= self.num_classes))

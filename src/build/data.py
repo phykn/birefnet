@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 
 from ..data.dataset import MaskDataset
 from ..data.pairs import pair_files
-from ..data.split import Splits, make, pack, restore
+from ..data.split import Splits, make, restore
 from ..prepare.spec import PreprocessSpec
 
 
@@ -44,17 +44,17 @@ def build(
 ) -> tuple[DataLoader, DataLoader, Splits]:
     image_paths = glob(os.path.join(cfg.data.image_dir, "*"))
     mask_paths = glob(os.path.join(cfg.data.mask_dir, "*"))
-    data = pair_files(image_paths, mask_paths)
+    pairs = pair_files(image_paths, mask_paths)
 
-    if len(data) < 2:
+    if len(pairs) < 2:
         raise ValueError(
             "At least two image/mask pairs are required for train/valid"
         )
 
     groups = (
-        make(data, float(cfg.data.valid_ratio))
+        make(pairs, float(cfg.data.valid_ratio))
         if splits is None
-        else restore(data, splits)
+        else restore(pairs, splits)
     )
     train_data = groups["train"]
     valid_data = groups["valid"]
@@ -62,7 +62,7 @@ def build(
                          ignore_index=int(cfg.data.get("ignore_index", 255)))
 
     train_dataset = MaskDataset(
-        data=train_data,
+        pairs=train_data,
         **label_options,
         size=PreprocessSpec.size,
         train=True,
@@ -74,7 +74,7 @@ def build(
         masking_prob=float(cfg.augment.get("masking_prob", 0.0)),
     )
     valid_dataset = MaskDataset(
-        data=valid_data,
+        pairs=valid_data,
         **label_options,
         size=PreprocessSpec.size,
         train=False,
@@ -83,4 +83,4 @@ def build(
 
     train_loader = _loader(cfg, train_dataset, shuffle=True)
     valid_loader = _loader(cfg, valid_dataset, shuffle=False)
-    return train_loader, valid_loader, pack(groups)
+    return train_loader, valid_loader, groups

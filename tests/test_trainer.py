@@ -287,7 +287,7 @@ def test_deployment_validation_preserves_class_three(tmp_path):
     Image.fromarray(np.zeros((8, 12, 3), dtype=np.uint8)).save(image_path)
     Image.fromarray(np.full((8, 12), 3, dtype=np.uint8)).save(mask_path)
     trainer = _make_trainer(tmp_path, preprocess=PreprocessSpec())
-    trainer.valid_loader.dataset.data = [(str(image_path), str(mask_path))]
+    trainer.valid_loader.dataset.pairs = [(str(image_path), str(mask_path))]
     with torch.no_grad():
         trainer.model.conv.weight.zero_()
         trainer.model.conv.bias.zero_()
@@ -336,7 +336,7 @@ def test_native_prediction_uses_saved_preprocess(monkeypatch, tmp_path):
         tmp_path,
         preprocess=PreprocessSpec(is_sem=True),
     )
-    trainer.valid_loader.dataset.data = [(str(image_path), str(mask_path))]
+    trainer.valid_loader.dataset.pairs = [(str(image_path), str(mask_path))]
     captured = {}
 
     def fake_predict(model, image, **kwargs):

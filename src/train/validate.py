@@ -62,7 +62,7 @@ class Validator:
         return {**{k: v / count for k, v in totals.items()}, **flatten_scores(matrix)}
 
     def predict_native(self, loader):
-        pairs = getattr(loader.dataset, "pairs", None) or getattr(loader.dataset, "data", None)
+        pairs = getattr(loader.dataset, "pairs", None)
         if not pairs:
             raise RuntimeError("Deployment validation dataset has no image/mask pairs")
         self.model.eval()

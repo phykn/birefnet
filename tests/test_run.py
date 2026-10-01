@@ -19,10 +19,8 @@ def _make_run(tmp_path):
     cfg = OmegaConf.create({"marker": "saved"})
     OmegaConf.save(cfg, run_dir / "config.yaml")
     splits = {
-        "train_image": ["train.png"],
-        "train_mask": ["train.png"],
-        "valid_image": ["valid.png"],
-        "valid_mask": ["valid.png"],
+        "train": [("train.png", "train.png")],
+        "valid": [("valid.png", "valid.png")],
     }
     save_splits(splits, run_dir)
     return run_dir, checkpoint, splits
@@ -137,8 +135,8 @@ def test_new_run_saves_config_and_splits_before_training(monkeypatch, tmp_path):
     path = tmp_path / "custom.yaml"
     cfg.train.steps = 3
     OmegaConf.save(cfg, path)
-    splits = {"train_image": ["train.png"], "train_mask": ["train.png"],
-              "valid_image": ["valid.png"], "valid_mask": ["valid.png"]}
+    splits = {"train": [("train.png", "train.png")],
+              "valid": [("valid.png", "valid.png")]}
     calls = {}
 
     class Model:
@@ -190,4 +188,20 @@ def test_missing_saved_split_fails_before_building_model(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run, "build_model", fail)
     with pytest.raises(FileNotFoundError):
+        run.train(checkpoint)
+
+
+def test_dataset_mismatch_fails_before_building_model(monkeypatch, tmp_path):
+    _, checkpoint, _ = _make_run(tmp_path)
+
+    def build_data(*args, **kwargs):
+        raise RuntimeError("Current dataset does not match the saved splits")
+
+    def build_model(*args, **kwargs):
+        raise AssertionError("Must check dataset membership before allocating the model")
+
+    monkeypatch.setattr(run, "build_data", build_data)
+    monkeypatch.setattr(run, "build_model", build_model)
+
+    with pytest.raises(RuntimeError, match="dataset does not match"):
         run.train(checkpoint)

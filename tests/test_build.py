@@ -63,10 +63,8 @@ def test_build_loaders_restores_saved_split_membership(tmp_path):
         Image.new("L", (4, 4)).save(mask_dir / f"{name}.png")
 
     splits = {
-        "train_image": ["c.png", "b.png"],
-        "train_mask": ["c.png", "b.png"],
-        "valid_image": ["a.png"],
-        "valid_mask": ["a.png"],
+        "train": [("c.png", "c.png"), ("b.png", "b.png")],
+        "valid": [("a.png", "a.png")],
     }
     save_splits(splits, run_dir)
     loaded = load_splits(run_dir)
@@ -88,9 +86,9 @@ def test_build_loaders_restores_saved_split_membership(tmp_path):
 
     train, valid, actual = build_data(cfg, loaded)
 
-    assert actual == splits
-    assert Path(train.dataset.data[0][0]).name == "c.png"
-    assert Path(valid.dataset.data[0][0]).name == "a.png"
+    assert actual == {"train": train.dataset.pairs, "valid": valid.dataset.pairs}
+    for name in ("train", "valid"):
+        assert [(Path(image).name, Path(mask).name) for image, mask in actual[name]] == splits[name]
 
 
 @pytest.mark.parametrize("workers, cuda", [(0, False), (2, True)])

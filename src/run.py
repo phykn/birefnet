@@ -51,8 +51,8 @@ def train(
     saved_splits = load_splits(run_dir) if run_dir is not None else None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = build_model(cfg, load_pretrained=checkpoint is None).to(device)
     train_loader, valid_loader, splits = build_data(cfg, saved_splits)
+    model = build_model(cfg, load_pretrained=checkpoint is None).to(device)
     target = run_dir if run_dir is not None else create_run_dir()
     trainer = build_trainer(
         cfg=cfg,
@@ -64,8 +64,8 @@ def train(
     if checkpoint is not None:
         trainer.load_resume(str(checkpoint))
 
-    n_train = len(splits["train_image"])
-    n_valid = len(splits["valid_image"])
+    n_train = len(splits["train"])
+    n_valid = len(splits["valid"])
     total, trainable = model.stats["total"], model.stats["trainable"]
     print(f"\n[Dataset] train={n_train}, valid={n_valid}")
     print(

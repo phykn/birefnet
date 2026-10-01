@@ -10,6 +10,7 @@ omegaconf
 tensorboard
 tqdm
 fastapi
+httpx2
 pydantic
 uvicorn
 pytest

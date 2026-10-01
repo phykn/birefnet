@@ -40,13 +40,19 @@ channel widths use the model's architecture defaults; ignored labels default to
 `num_workers > 0`, and prefetch defaults to 2. These defaults no longer need to
 be repeated in YAML. Existing explicit overrides in saved runs are still read.
 
-Results are saved under `run/<run-id>/`. `best_miou.pth` is selected by validation mIoU,
+Results are saved under `run/<run-id>/`. `best_miou.pth` is selected by validation
+mIoU on native-size predictions,
 `last.pth` is the latest model, and `last.train.pth` includes the state needed to resume.
 `last_ema.pth` contains a separate full model with EMA weights (`train.ema_decay`, default 0.99),
 updated only after successful optimizer steps. EMA is used for saving only;
 validation and best-model selection use the live model. Training checkpoints
 preserve EMA state; older checkpoints without EMA initialize it from restored
 model weights. Frozen parameters are reused and persistent model buffers are tracked.
+To resume, keep `config.yaml`, `train.csv`, and `valid.csv` beside the run's
+`weights/` directory. The current dataset must match the saved file pairs;
+split membership and order are restored before the model is allocated.
+`--resume` uses the saved config and cannot be combined with `--config`.
+Random sampling and augmentation sequences are not restored.
 Keep related images and crops from the same source in the same split. Automatic splitting operates on individual images.
 
 ### SEM inputs and augmentation
@@ -130,7 +136,10 @@ same Pillow RGB decoding as the training loader, including for 16-bit PNGs.
 
 ## Development
 
-`src/data/` pairs samples and applies training augmentation; `src/prepare/`
+`src/data/` owns image/mask pairs, split membership, CSV serialization, and
+training augmentation. Splits and datasets keep each image and mask together
+as a pair; CSVs store their filenames so dataset directories can be relocated.
+`src/prepare/`
 owns shared channel conversion and resize/padding geometry; `Fit` applies the
 same geometry to images, masks, and native-size restoration. `src/model/`
 owns the network and model checkpoint format, while `src/train/` owns losses,
