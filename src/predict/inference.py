@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from ..prepare.fit import Fit, fit_tensor, restore
+from ..precision import autocast, autocast_dtype
 from .tile import plan, weigh
 
 OutputMode = Literal["labels", "probability"]
@@ -14,12 +15,7 @@ OutputMode = Literal["labels", "probability"]
 def _autocast(device: torch.device):
     if device.type != "cuda":
         return contextlib.nullcontext()
-    dtype = (
-        torch.bfloat16
-        if torch.cuda.is_bf16_supported(including_emulation=False)
-        else torch.float16
-    )
-    return torch.amp.autocast("cuda", dtype=dtype)
+    return autocast(device, dtype=autocast_dtype(device))
 
 
 def _infer(

@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 
 from ..data.image import read_image, read_mask
 from ..prepare.spec import PreprocessSpec
+from ..precision import autocast
 from .metrics import confusion_matrix, scores
 
 
@@ -45,7 +46,7 @@ class Validator:
         matrix = torch.zeros(self.model.num_classes, self.model.num_classes, dtype=torch.int64)
         for cpu_batch in self.valid_loader:
             batch = {k: v.to(self.device) for k, v in cpu_batch.items()}
-            with torch.amp.autocast(self.device.type, dtype=self.amp_dtype, enabled=self.use_amp):
+            with autocast(self.device, dtype=self.amp_dtype, enabled=self.use_amp):
                 out = self.model(batch["image"])
                 losses, _ = self.criterion(out, batch)
             logits = F.interpolate(out.logits[-1].float(), size=batch["mask"].shape[-2:],

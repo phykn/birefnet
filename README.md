@@ -128,7 +128,9 @@ python run_api.py --host 127.0.0.1 --port 8000 --weight run/<run-id>/weights/bes
 ```
 
 Open `http://127.0.0.1:8000/docs` for the API documentation. Send `base64_str` to `POST /predict` to receive a base64-encoded class ID PNG.
-Use `--device cuda` for GPU inference. Both the API and prediction script default
+Use `--device cuda` for GPU inference, or `--device cuda:1` to select another GPU.
+Mixed precision follows the selected GPU's native BF16 support, with FP16 as the fallback.
+Both the API and prediction script default
 to the checkpoint's run config when available, then model defaults. `--config`
 selects an explicit configuration.
 The API reads the checkpoint's preprocessing settings by default and uses the
@@ -147,6 +149,8 @@ optimization, EMA, validation, and atomic training checkpoint writes.
 Each `Trainer` keeps one `Validator` for batch/native-size metrics and one
 `CheckpointStore` for saving and resuming model, optimizer, scheduler, scaler,
 and EMA state. The training loop owns the step count and best-model selection.
+`src/precision.py` chooses mixed precision for both training and inference from
+the model's device.
 `src/predict/` loads inference models and their run configuration, restores
 predictions, and blends tiles; `src/build/` assembles
 these components from configuration, including the loss shared by training

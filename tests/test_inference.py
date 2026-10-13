@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import numpy as np
 import pytest
 import torch
@@ -6,6 +8,55 @@ import torch.nn as nn
 from src.model.output import Output
 from src.predict.inference import predict, predict_logits
 from src.predict.tile import Tile, plan, weigh
+
+
+@pytest.mark.parametrize("support", [(True, False), (False, True)])
+def test_autocast_uses_model_device_and_restores_current_device(monkeypatch, support):
+    from src.predict.inference import _autocast
+
+    current = [0]
+    queried = []
+
+    @contextmanager
+    def device(target):
+        previous = current[0]
+        current[0] = target.index
+        try:
+            yield
+        finally:
+            current[0] = previous
+
+    def supported(including_emulation):
+        assert including_emulation is False
+        queried.append(current[0])
+        return support[current[0]]
+
+    def make_autocast(device_type, dtype, enabled=True):
+        assert device_type == "cuda" and enabled
+        assert current == [1]
+        return dtype
+
+    monkeypatch.setattr(torch.cuda, "device", device)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", supported)
+    monkeypatch.setattr(torch.amp, "autocast", make_autocast)
+
+    dtype = _autocast(torch.device("cuda:1"))
+
+    assert dtype == (torch.bfloat16 if support[1] else torch.float16)
+    assert queried == [1]
+    assert current == [0]
+
+
+def test_cpu_autocast_does_not_query_cuda(monkeypatch):
+    from src.predict.inference import _autocast
+
+    def fail(*args, **kwargs):
+        raise AssertionError("CPU inference must not access CUDA")
+
+    monkeypatch.setattr(torch.cuda, "device", fail)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", fail)
+    with _autocast(torch.device("cpu")):
+        pass
 
 
 class _ConstantModel(nn.Module):
