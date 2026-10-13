@@ -1,5 +1,6 @@
 import os
 from collections.abc import Callable
+from math import isfinite
 
 import numpy as np
 import torch
@@ -33,8 +34,8 @@ class Trainer:
         preprocess: PreprocessSpec | None = None,
         ignore_index: int = 255,
     ) -> None:
-        if not max_grad_norm > 0:
-            raise ValueError("max_grad_norm must be positive")
+        if not isfinite(max_grad_norm) or not max_grad_norm > 0:
+            raise ValueError("max_grad_norm must be finite and positive")
         if (
             not isinstance(accum_steps, int)
             or isinstance(accum_steps, bool)

@@ -83,6 +83,8 @@ def test_rejects_invalid_image(monkeypatch, api_client):
     {"output_mode": "probability", "class_id": -1},
     {"output_mode": "probability", "class_id": True}, {"class_id": 1},
     {"tiles": [0]}, {"overlap": 0.2},
+    {"tiles": [True]}, {"tiles": [2.0]}, {"tiles": ["2"]},
+    {"tiles": [9]}, {"tiles": [8, 1]}, {"tiles": [1] * 65},
 ])
 def test_rejects_invalid_output_contract(api_client, fields):
     client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
@@ -171,3 +173,79 @@ def test_rejects_pillow_decompression_bomb_as_large_image(monkeypatch, api_clien
     )
     assert response.status_code == 413
     assert response.json() == {"detail": "image too large"}
+
+
+@pytest.mark.parametrize("num_classes", [4, 256])
+def test_rejects_prediction_memory_budget_before_inference(monkeypatch, api_client, num_classes):
+    monkeypatch.setattr("backend.route.MAX_LOGIT_BYTES", 4 * 4 * num_classes * 4 - 1)
+    monkeypatch.setattr(PREDICT_TARGET, lambda *args, **kwargs: pytest.fail("inference ran"))
+    client = api_client(SimpleNamespace(num_classes=num_classes), torch.device("cpu"))
+    response = client.post("/predict", json={"base64_str": _encode(np.zeros((4, 4, 3), np.uint8))})
+    assert response.status_code == 413
+    assert response.json() == {"detail": "prediction dimensions too large"}
+
+
+def test_rejects_body_before_json_parsing(monkeypatch, api_client):
+    monkeypatch.setattr("backend.app.MAX_REQUEST_BYTES", 16)
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
+    response = client.post("/predict", content=b"{" + b"x" * 16,
+                           headers={"content-type": "application/json"})
+    assert response.status_code == 413
+    assert response.json() == {"detail": "request body too large"}
+
+
+def test_request_body_limit_counts_chunks_without_content_length(monkeypatch):
+    import asyncio
+    from backend.app import RequestBodyLimit
+
+    monkeypatch.setattr("backend.app.MAX_REQUEST_BYTES", 8)
+    chunks = iter([
+        {"type": "http.request", "body": b"12345", "more_body": True},
+        {"type": "http.request", "body": b"6789", "more_body": True},
+    ])
+    sent = []
+
+    async def receive():
+        return next(chunks)
+
+    async def send(message):
+        sent.append(message)
+
+    async def downstream(*args):
+        pytest.fail("oversized request reached JSON parser")
+
+    asyncio.run(RequestBodyLimit(downstream)({"type": "http", "headers": []}, receive, send))
+    assert sent[0]["status"] == 413
+
+
+def test_accepts_tile_budget_boundary(monkeypatch, api_client):
+    monkeypatch.setattr("backend.route.MAX_LOGIT_BYTES", 4 * 4 * 4 * 4)
+    monkeypatch.setattr(PREDICT_TARGET, lambda model, image, **kwargs: np.zeros(image.shape[:2], np.uint8))
+    client = api_client(SimpleNamespace(num_classes=4), torch.device("cpu"))
+    response = client.post("/predict", json={"base64_str": _encode(np.zeros((4, 4, 3), np.uint8)), "tiles": [8]})
+    assert response.status_code == 200
+
+
+def test_request_body_limit_replays_accepted_chunks(monkeypatch):
+    import asyncio
+    from backend.app import RequestBodyLimit
+
+    monkeypatch.setattr("backend.app.MAX_REQUEST_BYTES", 8)
+    messages = [
+        {"type": "http.request", "body": b"1234", "more_body": True},
+        {"type": "http.request", "body": b"5678", "more_body": False},
+    ]
+    chunks = iter(messages)
+    received = []
+
+    async def receive():
+        return next(chunks)
+
+    async def send(message):
+        pass
+
+    async def downstream(scope, receive, send):
+        received.append(await receive())
+
+    asyncio.run(RequestBodyLimit(downstream)({"type": "http"}, receive, send))
+    assert received == [{"type": "http.request", "body": b"12345678", "more_body": False}]

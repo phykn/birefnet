@@ -11,6 +11,11 @@ Run commands from the repository root.
 pip install -r requirements.txt
 ```
 
+Python 3.10 or newer is required. Keep PyTorch at 2.10 or newer: older
+versions have known checkpoint deserialization vulnerabilities even with
+`weights_only=True`. The Werkzeug floor in `requirements.txt` protects the
+TensorBoard dependency on Windows. Only load checkpoints from trusted sources.
+
 1. Download the [pretrained weights](https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.pth) to `weight/BiRefNet-general-epoch_244.pth`.
 2. Place images and masks with matching filename stems in `data/image/` and `data/mask/`.
 3. Set data paths and training options in `config/train.yaml`. Set the class count in `config/model.yaml`.
@@ -29,6 +34,9 @@ The backbone is always frozen; only the squeeze module and decoder are trained.
 BatchNorm statistics remain frozen. CUDA is used when available.
 `train.warmup_steps: 0` starts directly at `max_lr`; a positive value ramps
 from `min_lr` before cosine decay.
+`train.weight_decay` must be finite and non-negative; `train.max_grad_norm`
+must be finite and positive. Invalid EMA decay in a resume checkpoint is rejected
+before model and optimizer state are loaded.
 The segmentation objective uses cross-entropy, Dice overlap loss, and boundary
 cross-entropy, plus the model's auxiliary guidance loss. Dice is fixed; IoU
 remains an evaluation metric, not an additional training loss.
@@ -139,6 +147,17 @@ selects an explicit configuration.
 The API reads the checkpoint's preprocessing settings by default and uses the
 same Pillow RGB decoding as the training loader, including for 16-bit PNGs.
 
+API requests are bounded before JSON parsing (base64 limit plus 64 KiB of
+JSON overhead, approximately 42.73 MiB). Images may contain at most 32 MiB of
+encoded data and 36 million pixels. The native prediction array must also fit
+within 256 MiB (`height * width * num_classes * 4`); this is an array budget,
+not a limit on total process or GPU memory. Oversized inputs return HTTP 413.
+`tiles` must contain positive JSON integers with a total of at most 64 patches
+(`sum(grid * grid for grid in tiles)`); invalid tile settings return HTTP 422.
+Inference requests run one at a time. When exposing the API beyond localhost,
+bound concurrent connections and request rates at the serving proxy, since
+waiting request bodies still occupy memory.
+
 ## Development
 
 `src/data/` owns image/mask pairs, split membership, CSV serialization, and
@@ -165,5 +184,8 @@ the HTTP API and `scripts/` contains inspection tools.
 ```bash
 python -m pytest -q
 ```
+
+The [repository audit](AUDIT.md) records the module map, corrected findings,
+verification results, and remaining deployment and hardware limits.
 
 Based on [BiRefNet](https://github.com/ZhengPeng7/BiRefNet). Current checkpoints store the full model and are incompatible with earlier LoRA and binary segmentation checkpoints.

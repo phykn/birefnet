@@ -363,7 +363,7 @@ def test_trainer_rejects_invalid_accumulation(tmp_path, accum_steps):
         _make_trainer(tmp_path, accum_steps=accum_steps)
 
 
-@pytest.mark.parametrize("max_grad_norm", [0.0, -1.0, float("nan")])
+@pytest.mark.parametrize("max_grad_norm", [0.0, -1.0, float("nan"), float("inf")])
 def test_trainer_rejects_invalid_gradient_limit(tmp_path, max_grad_norm):
     with pytest.raises(ValueError, match="max_grad_norm"):
         _make_trainer(tmp_path, max_grad_norm=max_grad_norm)
@@ -420,6 +420,27 @@ def test_resume_without_ema_starts_average_from_restored_weights(tmp_path):
     resumed.load_resume(str(path))
     for name, param in resumed.model.named_parameters():
         torch.testing.assert_close(resumed.ema.params[name], param)
+
+
+@pytest.mark.parametrize("decay", [float("nan"), float("inf"), -0.1, 1.0])
+def test_resume_rejects_invalid_ema_decay_before_loading_weights(tmp_path, decay):
+    trainer = _make_trainer(tmp_path)
+    trainer.step()
+    trainer.save()
+    path = tmp_path / "weights/last.train.pth"
+    saved = torch.load(path, weights_only=True)
+    saved["ema_decay"] = decay
+    torch.save(saved, path)
+    resumed = _make_trainer(tmp_path)
+    before = {name: value.clone() for name, value in resumed.model.state_dict().items()}
+
+    with pytest.raises(RuntimeError, match="EMA decay"):
+        resumed.load_resume(str(path))
+
+    assert resumed.global_step == 0
+    assert not resumed.optimizer.state
+    for name, value in resumed.model.state_dict().items():
+        torch.testing.assert_close(value, before[name])
 
 
 

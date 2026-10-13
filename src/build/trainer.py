@@ -1,4 +1,5 @@
 import os
+from math import isfinite
 from typing import Any
 
 import torch
@@ -24,10 +25,13 @@ def build(
     params = model.list_trainable()
     if not params:
         raise RuntimeError("No trainable parameters were selected")
+    weight_decay = float(cfg.train.weight_decay)
+    if not isfinite(weight_decay) or weight_decay < 0:
+        raise ValueError("train.weight_decay must be finite and non-negative")
     optimizer = torch.optim.AdamW(
         [{"name": "decoder", "params": params}],
         lr=float(cfg.train.max_lr),
-        weight_decay=float(cfg.train.weight_decay),
+        weight_decay=weight_decay,
     )
     scheduler = CosineSchedule(
         optimizer=optimizer,

@@ -120,3 +120,25 @@ def test_loader_rejects_settings_that_would_be_silently_coerced(name, value):
     cfg = OmegaConf.create({"loader": {"batch": 1, "num_workers": 2, name: value}})
     with pytest.raises(ValueError, match=name):
         _loader(cfg, [1, 2], shuffle=False)
+
+
+@pytest.mark.parametrize("weight_decay", [float("nan"), float("inf"), -float("inf"), -0.1])
+def test_trainer_build_rejects_invalid_weight_decay(tmp_path, weight_decay):
+    import torch
+    from src.build.trainer import build as build_trainer
+
+    model = torch.nn.Linear(2, 4)
+    model.num_classes = 4
+    model.list_trainable = lambda: list(model.parameters())
+    cfg = OmegaConf.create({
+        "birefnet": {"num_classes": 4},
+        "data": {},
+        "loss": {"lambda_cls": 1, "lambda_region": 1, "lambda_boundary": 0.5,
+                 "boundary_radius": 3, "lambda_aux": 1},
+        "train": {"max_lr": 0.01, "min_lr": 0.001, "warmup_steps": 0,
+                  "steps": 10, "weight_decay": weight_decay,
+                  "max_grad_norm": 1, "accum_steps": 1},
+    })
+
+    with pytest.raises(ValueError, match="weight_decay"):
+        build_trainer(cfg, model, [], [], tmp_path)

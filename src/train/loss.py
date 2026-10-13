@@ -77,6 +77,8 @@ class SegmentationLoss(nn.Module):
         if pred.shape[1] != self.num_classes:
             raise ValueError(f"expected {self.num_classes} logit channels, got {pred.shape[1]}")
         target, valid, onehot = prepare_target(pred, target, valid, self.ignore_index)
+        # Mask before CE/softmax: multiplying an ignored NaN by zero is still NaN.
+        pred = pred.masked_fill(valid == 0, 0)
         ce = F.cross_entropy(pred, target, ignore_index=self.ignore_index, reduction="none")[:, None]
         cls = masked_mean(ce, valid)
         region = self.region(pred.softmax(1), onehot, valid)

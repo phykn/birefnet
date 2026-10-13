@@ -58,13 +58,17 @@ class CheckpointStore:
             raise RuntimeError("Checkpoint ignore_index differs from configuration")
         if PreprocessSpec.from_meta(state) != self.preprocess:
             raise RuntimeError("Checkpoint preprocess differs from configuration")
+        if "ema" in state:
+            decay = float(state["ema_decay"])
+            if not 0.0 <= decay < 1.0:
+                raise RuntimeError("Checkpoint EMA decay must be in [0, 1)")
         self.model.load_state_dict(state["model"], strict=True)
         self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         self.scaler.load_state_dict(state["scaler"])
         if "ema" in state:
             self.ema.load_state_dict(state["ema"])
-            self.ema.decay = float(state["ema_decay"])
+            self.ema.decay = decay
         else:
             self.ema.load_state_dict({name: state["model"][name] for name in self.ema.params})
         return int(state["global_step"]), float(state["best_region"])

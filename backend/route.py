@@ -7,6 +7,7 @@ from .codec import ImageLimitError, decode, encode
 from .schema import HealthResponse, PredictRequest, PredictResponse
 
 router = APIRouter()
+MAX_LOGIT_BYTES = 256 * 1024 * 1024
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -27,6 +28,9 @@ async def predict(request: Request, body: PredictRequest) -> PredictResponse:
             raise HTTPException(status_code=413, detail="image too large") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid image") from exc
+
+        if image.shape[0] * image.shape[1] * num_classes * 4 > MAX_LOGIT_BYTES:
+            raise HTTPException(status_code=413, detail="prediction dimensions too large")
 
         mask = await run_in_threadpool(
             predict_mask,

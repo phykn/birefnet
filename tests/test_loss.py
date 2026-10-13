@@ -96,3 +96,51 @@ def test_single_view_without_gdt_still_deep_supervises():
 def test_empty_logits_raise_value_error():
     with pytest.raises(ValueError, match="at least one segmentation logit"):
         TrainLoss()(Output([]), {"mask": torch.zeros(1, 8, 8, dtype=torch.long)})
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("all_ignored", [False, True])
+def test_nonfinite_ignored_logits_do_not_affect_loss_or_gradients(bad, all_ignored):
+    target = torch.zeros(1, 8, 8, dtype=torch.long)
+    target[..., 4:] = 255
+    valid = torch.ones(1, 1, 8, 8)
+    valid[..., :2] = 0
+    if all_ignored:
+        target.fill_(255)
+    inactive = (target[:, None] == 255) | (valid == 0)
+    clean = torch.zeros(1, 4, 8, 8, requires_grad=True)
+    dirty = clean.detach().masked_fill(inactive, bad).requires_grad_()
+    criterion = SegmentationLoss()
+
+    expected = criterion(clean, target, valid)
+    actual = criterion(dirty, target, valid)
+
+    torch.testing.assert_close(actual, expected)
+    actual.backward()
+    expected.backward()
+    torch.testing.assert_close(dirty.grad, clean.grad)
+    assert not dirty.grad.masked_select(inactive).any()
+
+    parts, total = TrainLoss()(Output([dirty]), {"mask": target, "valid": valid})
+    torch.testing.assert_close(total, expected)
+    assert parts["aux"] == 0
+
+
+def test_gdt_ignores_nonfinite_predictions_and_labels_outside_valid_region():
+    valid = torch.zeros(1, 1, 12, 12)
+    valid[..., 1:11, 1:11] = 1
+    pred = torch.zeros_like(valid, requires_grad=True)
+    label = torch.ones_like(valid)
+    dirty_pred = pred.detach().clone()
+    dirty_label = label.clone()
+    dirty_pred[..., :3, :] = float("nan")
+    dirty_label[..., :3, :] = float("nan")
+    dirty_pred.requires_grad_()
+
+    expected = TrainLoss._guide(([pred], [label]), valid)
+    actual = TrainLoss._guide(([dirty_pred], [dirty_label]), valid)
+
+    torch.testing.assert_close(actual, expected)
+    actual.backward()
+    expected.backward()
+    torch.testing.assert_close(dirty_pred.grad, pred.grad)

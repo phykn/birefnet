@@ -40,7 +40,9 @@ class TrainLoss(nn.Module):
                 pred = F.interpolate(pred, label.shape[-2:], mode="bilinear", align_corners=False)
             mask = F.interpolate(valid, label.shape[-2:], mode="nearest")
             mask = erode_valid(mask, radius=2)
-            pixel_loss = F.binary_cross_entropy_with_logits(pred, label.detach(), reduction="none")
+            pred = pred.masked_fill(mask == 0, 0)
+            label = label.detach().masked_fill(mask == 0, 0)
+            pixel_loss = F.binary_cross_entropy_with_logits(pred, label, reduction="none")
             loss = loss + masked_mean(pixel_loss, mask)
         return loss / len(preds)
 
@@ -55,9 +57,8 @@ class TrainLoss(nn.Module):
         count = out.logits[-1].shape[0]
         if count != size:
             raise ValueError("output batch must match target batch")
-        zero = out.logits[-1].float().sum() * 0.0
         parts = self._segment(out.logits, target, valid, cut=cut)
-        aux_raw = self._guide(out.gdt, valid) if out.gdt is not None and self.lambda_aux else zero
+        aux_raw = self._guide(out.gdt, valid) if out.gdt is not None and self.lambda_aux else parts["seg"] * 0.0
         aux = self.lambda_aux * aux_raw
         loss = parts["seg"] + aux
         parts.update(loss=loss, aux_raw=aux_raw, aux=aux)

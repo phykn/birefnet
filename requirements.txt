@@ -1,4 +1,4 @@
-torch
+torch>=2.10.0
 torchvision
 timm
 kornia
@@ -8,6 +8,7 @@ opencv-python-headless
 pillow
 omegaconf
 tensorboard
+werkzeug>=3.1.9
 tqdm
 fastapi
 httpx2
