@@ -15,7 +15,7 @@ class CosineSchedule(_LRScheduler):
         max_lr: Max learning rate of the first cycle.
         min_lr: Minimum learning rate.
         warmup_steps: Linear warmup step size (must be < first_cycle_steps).
-        gamma: Per-cycle decay factor applied to max_lr.
+        gamma: Per-cycle decay factor applied to max_lr, bounded below by min_lr.
         last_epoch: Index of the last epoch.
     """
 
@@ -120,7 +120,8 @@ class CosineSchedule(_LRScheduler):
             )
 
         self.max_lrs = [
-            base_max_lr * (self.gamma**self.cycle) for base_max_lr in self.base_max_lrs
+            max(min_lr, base_max_lr * (self.gamma**self.cycle))
+            for base_max_lr, min_lr in zip(self.base_max_lrs, self.min_lrs)
         ]
         self._last_lr = self.get_lr()
         for param_group, lr in zip(self.optimizer.param_groups, self._last_lr):

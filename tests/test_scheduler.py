@@ -162,3 +162,22 @@ def test_validates_learning_rate_overrides_per_group():
         CosineSchedule(optimizer, first_cycle_steps=10, max_lr=0.1)
 
     assert [group["lr"] for group in optimizer.param_groups] == [0.05, 0.05]
+
+
+@pytest.mark.parametrize("warmup", [0, 1])
+@pytest.mark.parametrize("gamma", [0.0, 0.1])
+def test_restart_decay_respects_minimum_learning_rate(warmup, gamma):
+    param = torch.nn.Parameter(torch.ones(()))
+    optimizer = torch.optim.SGD([param], lr=0.1)
+    scheduler = CosineSchedule(
+        optimizer, first_cycle_steps=4, warmup_steps=warmup,
+        max_lr=0.1, min_lr=0.01, gamma=gamma,
+    )
+    rates = [optimizer.param_groups[0]["lr"]]
+    for _ in range(12):
+        optimizer.step()
+        scheduler.step()
+        rates.append(optimizer.param_groups[0]["lr"])
+
+    assert all(0.01 <= lr <= 0.1 for lr in rates)
+    assert rates[-1] == pytest.approx(0.01)
