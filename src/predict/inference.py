@@ -36,7 +36,10 @@ def _infer(
 
 
 def _restore(logits: np.ndarray, fit: Fit) -> np.ndarray:
-    return np.stack([restore(channel, fit) for channel in logits])
+    output = np.empty((len(logits), fit.src_h, fit.src_w), dtype=np.float32)
+    for index, channel in enumerate(logits):
+        output[index] = restore(channel, fit)
+    return output
 
 
 def _merge(
@@ -73,7 +76,8 @@ def _merge(
 
     if np.any(weight <= 0):
         raise RuntimeError("Tile planner left pixels without merge weight")
-    return merged / weight
+    merged /= weight
+    return merged
 
 
 @torch.inference_mode()
@@ -122,7 +126,7 @@ def predict_logits(
                 is_sem,
             )
         if total is None:
-            total = output.astype(np.float32, copy=True)
+            total = output
         else:
             np.add(total, output, out=total)
 

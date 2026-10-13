@@ -137,6 +137,22 @@ def test_tile_batch_does_not_change_logits():
     np.testing.assert_allclose(first, second, atol=1e-6)
 
 
+@pytest.mark.parametrize("tiles", [(1,), (3,), (1, 3)])
+def test_predictions_do_not_share_storage_with_model_or_input(tiles):
+    model = _ConstantModel(logit=1.25).eval()
+    weights = model.logit.detach().clone()
+    image = np.arange(32 * 48 * 3, dtype=np.uint8).reshape(32, 48, 3)
+    original = image.copy()
+
+    logits = predict_logits(model, image, size=32, tiles=tiles)
+    logits.fill(0)
+
+    torch.testing.assert_close(model.logit, weights)
+    np.testing.assert_array_equal(image, original)
+    repeated = predict_logits(model, image, size=32, tiles=tiles)
+    np.testing.assert_allclose(repeated[3], 1.25, atol=1e-6)
+
+
 def test_multiple_grids_are_streamed_and_averaged_at_logit_level(monkeypatch):
     model = _MeanModel().eval()
     image = np.zeros((45, 61, 3), dtype=np.uint8)
