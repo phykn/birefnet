@@ -129,3 +129,36 @@ def test_parameter_groups_keep_their_lr_scale():
 def test_rejects_invalid_cycle_lengths(warmup, total):
     with pytest.raises(ValueError):
         _make(warmup=warmup, total=total)
+
+
+@pytest.mark.parametrize("options", [
+    {"first_cycle_steps": 1.5}, {"first_cycle_steps": float("nan")},
+    {"warmup_steps": 0.5}, {"warmup_steps": float("nan")},
+    {"cycle_mult": float("nan")}, {"cycle_mult": float("inf")},
+    {"gamma": float("nan")}, {"gamma": float("inf")},
+    {"min_lr": float("nan")}, {"max_lr": float("inf")},
+    {"min_lr": -0.1}, {"max_lr": -0.1},
+    {"min_lr": 0.2, "max_lr": 0.1},
+])
+def test_rejects_invalid_schedule_before_changing_optimizer(options):
+    param = torch.nn.Parameter(torch.ones(()))
+    optimizer = torch.optim.SGD([param], lr=0.05)
+    kwargs = {"first_cycle_steps": 10, **options}
+
+    with pytest.raises(ValueError):
+        CosineSchedule(optimizer, **kwargs)
+
+    assert optimizer.param_groups[0]["lr"] == 0.05
+
+
+def test_validates_learning_rate_overrides_per_group():
+    params = [torch.nn.Parameter(torch.ones(())) for _ in range(2)]
+    optimizer = torch.optim.SGD([
+        {"params": [params[0]], "min_lr": 0.01},
+        {"params": [params[1]], "min_lr": float("nan")},
+    ], lr=0.05)
+
+    with pytest.raises(ValueError, match="learning rates"):
+        CosineSchedule(optimizer, first_cycle_steps=10, max_lr=0.1)
+
+    assert [group["lr"] for group in optimizer.param_groups] == [0.05, 0.05]

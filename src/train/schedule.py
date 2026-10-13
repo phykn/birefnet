@@ -30,16 +30,16 @@ class CosineSchedule(_LRScheduler):
         gamma: float = 1.0,
         last_epoch: int = -1,
     ):
-        if isinstance(first_cycle_steps, bool) or first_cycle_steps <= 0:
-            raise ValueError("first_cycle_steps must be positive")
-        if isinstance(warmup_steps, bool) or warmup_steps < 0:
-            raise ValueError("warmup_steps must be non-negative")
+        if type(first_cycle_steps) is not int or first_cycle_steps <= 0:
+            raise ValueError("first_cycle_steps must be a positive integer")
+        if type(warmup_steps) is not int or warmup_steps < 0:
+            raise ValueError("warmup_steps must be a non-negative integer")
         if warmup_steps >= first_cycle_steps:
             raise ValueError("warmup_steps must be less than first_cycle_steps")
-        if cycle_mult <= 0:
-            raise ValueError("cycle_mult must be positive")
-        if gamma < 0:
-            raise ValueError("gamma must be non-negative")
+        if not math.isfinite(cycle_mult) or cycle_mult <= 0:
+            raise ValueError("cycle_mult must be finite and positive")
+        if not math.isfinite(gamma) or gamma < 0:
+            raise ValueError("gamma must be finite and non-negative")
 
         self.first_cycle_steps = first_cycle_steps
         self.cycle_mult = cycle_mult
@@ -47,6 +47,9 @@ class CosineSchedule(_LRScheduler):
         self.base_max_lrs = self._group_values(optimizer, max_lr, "max_lr", group_count)
         self.max_lrs = self.base_max_lrs.copy()
         self.min_lrs = self._group_values(optimizer, min_lr, "min_lr", group_count)
+        for low, high in zip(self.min_lrs, self.max_lrs):
+            if not (math.isfinite(low) and math.isfinite(high) and 0 <= low <= high):
+                raise ValueError("learning rates must be finite and satisfy 0 <= min_lr <= max_lr")
         self.warmup_steps = warmup_steps
         self.gamma = gamma
 

@@ -62,7 +62,7 @@ class _DummyDataset(Dataset):
         }
 
 
-def _make_trainer(tmp_path, accum_steps=1, preprocess=None):
+def _make_trainer(tmp_path, accum_steps=1, preprocess=None, max_grad_norm=1.0):
     model = _DummyModel()
     train_loader = DataLoader(_DummyDataset(4), batch_size=2)
     valid_loader = DataLoader(_DummyDataset(4), batch_size=2)
@@ -84,7 +84,7 @@ def _make_trainer(tmp_path, accum_steps=1, preprocess=None):
         scheduler=scheduler,
         save_dir=str(tmp_path),
         predictor=predict_logits,
-        max_grad_norm=1.0,
+        max_grad_norm=max_grad_norm,
         accum_steps=accum_steps,
         preprocess=preprocess,
     )
@@ -341,10 +341,32 @@ def test_training_rejects_non_positive_frequencies(tmp_path, name, value):
         trainer.train(**kwargs)
 
 
+@pytest.mark.parametrize("name", ["steps", "val_freq", "save_freq"])
+@pytest.mark.parametrize("value", [1.5, True, float("nan"), float("inf")])
+def test_training_rejects_non_integer_frequencies_before_logging(
+    monkeypatch, tmp_path, name, value,
+):
+    trainer = _make_trainer(tmp_path)
+
+    def fail(**kwargs):
+        raise AssertionError("Invalid settings must fail before opening logs")
+
+    monkeypatch.setattr("src.train.trainer.SummaryWriter", fail)
+    kwargs = {"steps": 1, "val_freq": 2, "save_freq": 2, name: value}
+    with pytest.raises(ValueError, match=name):
+        trainer.train(**kwargs)
+
+
 @pytest.mark.parametrize("accum_steps", [0, -1, True, 1.5])
 def test_trainer_rejects_invalid_accumulation(tmp_path, accum_steps):
     with pytest.raises(ValueError, match="accum_steps"):
         _make_trainer(tmp_path, accum_steps=accum_steps)
+
+
+@pytest.mark.parametrize("max_grad_norm", [0.0, -1.0, float("nan")])
+def test_trainer_rejects_invalid_gradient_limit(tmp_path, max_grad_norm):
+    with pytest.raises(ValueError, match="max_grad_norm"):
+        _make_trainer(tmp_path, max_grad_norm=max_grad_norm)
 
 
 def test_native_prediction_uses_saved_preprocess(monkeypatch, tmp_path):

@@ -32,7 +32,7 @@ class Trainer:
         preprocess: PreprocessSpec | None = None,
         ignore_index: int = 255,
     ) -> None:
-        if max_grad_norm <= 0:
+        if not max_grad_norm > 0:
             raise ValueError("max_grad_norm must be positive")
         if (
             not isinstance(accum_steps, int)
@@ -179,12 +179,9 @@ class Trainer:
         val_freq: int = 500,
         save_freq: int = 1000,
     ) -> None:
-        if steps < 1:
-            raise ValueError("steps must be positive")
-        if val_freq < 1:
-            raise ValueError("val_freq must be positive")
-        if save_freq < 1:
-            raise ValueError("save_freq must be positive")
+        for name, value in (("steps", steps), ("val_freq", val_freq), ("save_freq", save_freq)):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
 
         writer = SummaryWriter(log_dir=os.path.join(self.save_dir, "logs"))
         self._writer = writer
