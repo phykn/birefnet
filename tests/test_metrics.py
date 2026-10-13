@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -44,3 +45,23 @@ def test_all_ignored_metrics_are_undefined():
 def test_native_shape_confusion_matches_batched():
     target = torch.tensor([[0, 1], [2, 3]])
     assert torch.equal(confusion_matrix(target, target), confusion_matrix(target[None], target[None]))
+
+
+@pytest.mark.parametrize("metric", [brier, ece])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
+def test_high_resolution_calibration_remains_finite(metric, dtype):
+    logits = torch.ones(1, 4, 512, 512, dtype=dtype)
+    target = torch.zeros(1, 512, 512, dtype=torch.long)
+    score = metric(logits, target)
+    assert torch.isfinite(score)
+    assert score.item() == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize("metric", [brier, ece])
+@pytest.mark.parametrize("all_ignored", [False, True])
+def test_calibration_excludes_nonfinite_ignored_pixels(metric, all_ignored):
+    logits = torch.ones(1, 4, 1, 3)
+    logits[..., 1:] = float("nan")
+    target = torch.tensor([[[255 if all_ignored else 0, 255, 1]]])
+    valid = torch.tensor([[[[1.0, 1.0, 0.0]]]])
+    assert metric(logits, target, valid).item() == pytest.approx(0.0 if all_ignored else 0.75)

@@ -61,21 +61,26 @@ def dice(logits, target, valid=None, ignore_index=255):
     return scores(confusion_matrix(logits, target, valid, logits.shape[1], ignore_index))["mdice"]
 
 
+def _probabilities(logits):
+    dtype = torch.float64 if logits.dtype == torch.float64 else torch.float32
+    return logits.softmax(1, dtype=dtype)
+
+
 def brier(logits, target, valid=None, ignore_index=255):
     active = _active(target, valid, ignore_index)
     truth = F.one_hot(target.masked_fill(~active, 0).long(), logits.shape[1]).permute(0, 3, 1, 2)
-    error = (logits.softmax(1) - truth).square().sum(1)
-    return (error * active).sum() / active.sum().clamp_min(1)
+    error = (_probabilities(logits) - truth).square().sum(1)
+    return error[active].sum() / active.sum().clamp_min(1)
 
 
 def ece(logits, target, valid=None, bins=10, ignore_index=255):
     if bins <= 0:
         raise ValueError("bins must be positive")
     active = _active(target, valid, ignore_index)
-    confidence, prediction = logits.softmax(1).max(1)
+    confidence, prediction = _probabilities(logits).max(1)
     confidence = confidence[active]
-    correct = (prediction[active] == target[active]).to(logits.dtype)
-    result = logits.sum() * 0.0
+    correct = (prediction[active] == target[active]).to(confidence.dtype)
+    result = confidence.sum() * 0.0
     if confidence.numel() == 0:
         return result
     for index in range(bins):
