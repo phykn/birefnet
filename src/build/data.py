@@ -12,25 +12,32 @@ from ..prepare.spec import PreprocessSpec
 
 
 def _loader(cfg: Any, dataset: MaskDataset, shuffle: bool) -> DataLoader:
-    workers = int(cfg.loader.num_workers)
-    if workers < 0:
-        raise ValueError("loader.num_workers must be non-negative")
+    workers = cfg.loader.num_workers
+    if type(workers) is not int or workers < 0:
+        raise ValueError("loader.num_workers must be a non-negative integer")
+    batch = cfg.loader.batch
+    if type(batch) is not int or batch < 1:
+        raise ValueError("loader.batch must be a positive integer")
 
-    persistent = bool(cfg.loader.get("persistent_workers", workers > 0))
+    persistent = cfg.loader.get("persistent_workers", workers > 0)
+    pin_memory = cfg.loader.get("pin_memory", torch.cuda.is_available())
+    for name, value in (("persistent_workers", persistent), ("pin_memory", pin_memory)):
+        if not isinstance(value, bool):
+            raise ValueError(f"loader.{name} must be a bool")
     if workers == 0 and persistent:
         raise ValueError("persistent_workers requires num_workers > 0")
 
     options: dict[str, Any] = {
         "dataset": dataset,
-        "batch_size": int(cfg.loader.batch),
+        "batch_size": batch,
         "shuffle": shuffle,
         "num_workers": workers,
-        "pin_memory": bool(cfg.loader.get("pin_memory", torch.cuda.is_available())),
+        "pin_memory": pin_memory,
     }
     if workers > 0:
-        prefetch = int(cfg.loader.get("prefetch_factor", 2))
-        if prefetch < 1:
-            raise ValueError("loader.prefetch_factor must be positive")
+        prefetch = cfg.loader.get("prefetch_factor", 2)
+        if type(prefetch) is not int or prefetch < 1:
+            raise ValueError("loader.prefetch_factor must be a positive integer")
         options.update(
             persistent_workers=persistent,
             prefetch_factor=prefetch,

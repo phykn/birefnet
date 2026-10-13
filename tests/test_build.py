@@ -106,3 +106,17 @@ def test_loader_defaults_follow_workers_and_device(monkeypatch, workers, cuda):
     else:
         assert "persistent_workers" not in options
         assert "prefetch_factor" not in options
+
+
+@pytest.mark.parametrize("name,value", [
+    ("batch", 1.5), ("batch", True),
+    ("num_workers", 1.5), ("num_workers", True),
+    ("prefetch_factor", 1.5), ("prefetch_factor", True),
+    ("pin_memory", "false"), ("persistent_workers", "false"),
+])
+def test_loader_rejects_settings_that_would_be_silently_coerced(name, value):
+    from src.build.data import _loader
+
+    cfg = OmegaConf.create({"loader": {"batch": 1, "num_workers": 2, name: value}})
+    with pytest.raises(ValueError, match=name):
+        _loader(cfg, [1, 2], shuffle=False)

@@ -39,6 +39,9 @@ channel widths use the model's architecture defaults; ignored labels default to
 `255`. Loader pinning follows CUDA availability, persistent workers follow
 `num_workers > 0`, and prefetch defaults to 2. These defaults no longer need to
 be repeated in YAML. Existing explicit overrides in saved runs are still read.
+Batch size and prefetch must be positive integers, and worker count a
+non-negative integer. Pinning and persistent-worker overrides must be YAML
+booleans (`true` or `false`, without quotes).
 
 Results are saved under `run/<run-id>/`. `best_miou.pth` is selected by validation
 mIoU on native-size predictions,
@@ -67,7 +70,7 @@ Training crops and rotates/flips the grayscale image, applies brightness/contras
 jitter, then derives all three channels from that same augmented image.
 Each training sample has one augmented image. Brightness is sampled uniformly
 from -0.20 to +0.20, and contrast gain from 0.60 to 1.40.
-`augment.brightness` and `augment.contrast` set these limits.
+`augment.brightness` and `augment.contrast` set these limits and must be finite.
 Validation has no random jitter.
 ImageNet normalization follows feature generation and edge masking.
 

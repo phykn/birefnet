@@ -238,3 +238,10 @@ def test_jitter_samples_both_directions(monkeypatch, bright, contrast, expected)
     monkeypatch.setattr("random.uniform", lambda low, high: next(values))
     result = jitter(np.full((4, 4), 64, np.uint8), (0.2, 0.4))
     assert np.all(result == expected)
+
+
+@pytest.mark.parametrize("name", ["brightness", "contrast"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_training_dataset_rejects_nonfinite_jitter(name, value):
+    with pytest.raises(ValueError, match=name):
+        MaskDataset([], train=True, **{name: value})

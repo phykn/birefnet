@@ -1,3 +1,4 @@
+from math import isfinite
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,10 @@ class MaskDataset:
         self.train = train
         if train and (type(min_crop_size) is not int or not 1 <= min_crop_size <= self.size):
             raise ValueError("min_crop_size must be an integer in [1, size]")
+        if train:
+            for name, value in (("brightness", brightness), ("contrast", contrast)):
+                if not isfinite(value):
+                    raise ValueError(f"{name} must be finite")
         self.min_crop_size = min_crop_size
         self.jitter = (brightness, contrast)
         if not isinstance(is_sem, bool):
