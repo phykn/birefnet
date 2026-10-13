@@ -43,7 +43,6 @@ class Trainer:
 
         self.model = model
         self.train_loader = train_loader
-        self.valid_loader = valid_loader
         self.criterion = criterion
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -51,8 +50,6 @@ class Trainer:
         self.save_dir = save_dir
         self.max_grad_norm = float(max_grad_norm)
         self.accum_steps = int(accum_steps)
-        self.preprocess = preprocess or PreprocessSpec()
-        self.predictor = predictor
         self.trainable_params = tuple(model.list_trainable())
         if not self.trainable_params:
             raise RuntimeError("Trainer requires trainable model parameters")
@@ -60,7 +57,6 @@ class Trainer:
         self.device = next(model.parameters()).device
         self.global_step = 0
         self.best_region = float("-inf")
-        self.ignore_index = ignore_index
 
         self.use_amp = self.device.type == "cuda"
         if self.use_amp and torch.cuda.is_bf16_supported(including_emulation=False):
@@ -69,6 +65,28 @@ class Trainer:
             self.amp_dtype = torch.float16
         self.scaler = torch.amp.GradScaler(
             self.device.type, enabled=self.use_amp and self.amp_dtype == torch.float16
+        )
+        preprocess = preprocess or PreprocessSpec()
+        self.validator = Validator(
+            model=model,
+            valid_loader=valid_loader,
+            criterion=criterion,
+            device=self.device,
+            amp_dtype=self.amp_dtype,
+            use_amp=self.use_amp,
+            preprocess=preprocess,
+            predictor=predictor,
+            ignore_index=ignore_index,
+        )
+        self.checkpoints = CheckpointStore(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=self.scaler,
+            ema=self.ema,
+            save_dir=save_dir,
+            preprocess=preprocess,
+            ignore_index=ignore_index,
         )
         self._writer: SummaryWriter | None = None
         self._train_iter = None
@@ -80,48 +98,11 @@ class Trainer:
             for key, value in batch.items()
         }
 
-    def _make_validator(self) -> Validator:
-        return Validator(
-            model=self.model,
-            valid_loader=self.valid_loader,
-            criterion=self.criterion,
-            device=self.device,
-            amp_dtype=self.amp_dtype,
-            use_amp=self.use_amp,
-            preprocess=self.preprocess,
-            predictor=self.predictor,
-            ignore_index=self.ignore_index,
-        )
-
-    def validate(self) -> dict[str, float]:
-        return self._make_validator().validate()
-
-    def predict_native(self, loader: DataLoader):
-        return self._make_validator().predict_native(loader)
-
-    def validate_deploy(self) -> dict[str, float]:
-        return self._make_validator().validate_deploy()
-
-    def _make_checkpoint_store(self) -> CheckpointStore:
-        return CheckpointStore(
-            model=self.model,
-            optimizer=self.optimizer,
-            scheduler=self.scheduler,
-            scaler=self.scaler,
-            ema=self.ema,
-            save_dir=self.save_dir,
-            preprocess=self.preprocess,
-            ignore_index=self.ignore_index,
-        )
-
     def save(self) -> None:
-        self._make_checkpoint_store().save(self.global_step, self.best_region)
-
-    def save_best(self, name: str, metrics: dict[str, float]) -> None:
-        self._make_checkpoint_store().save_best(name, metrics, self.global_step)
+        self.checkpoints.save(self.global_step, self.best_region)
 
     def load_resume(self, path: str) -> None:
-        self.global_step, self.best_region = self._make_checkpoint_store().load_resume(path)
+        self.global_step, self.best_region = self.checkpoints.load_resume(path)
         self._train_iter = None
 
     def next_batch(self) -> dict[str, torch.Tensor]:
@@ -183,14 +164,14 @@ class Trainer:
         if self._writer is None:
             raise RuntimeError("Validation logging requires an active writer")
 
-        valid_metrics = self.validate()
-        valid_metrics.update(self.validate_deploy())
+        valid_metrics = self.validator.validate()
+        valid_metrics.update(self.validator.validate_deploy())
         for key, value in valid_metrics.items():
             self._writer.add_scalar(f"valid/{key}", value, self.global_step)
         score = valid_metrics["deploy_miou"]
         if score > self.best_region:
             self.best_region = score
-            self.save_best("miou", valid_metrics)
+            self.checkpoints.save_best("miou", valid_metrics, self.global_step)
 
     def train(
         self,
@@ -214,6 +195,7 @@ class Trainer:
         )
         skipped = 0
         last_validated: int | None = None
+        last_saved: int | None = None
 
         try:
             while self.global_step < steps:
@@ -242,10 +224,13 @@ class Trainer:
 
                 if self.global_step % save_freq == 0:
                     self.save()
+                    last_saved = self.global_step
 
             if last_validated != self.global_step:
                 self._evaluate()
-            self.save()
+                last_saved = None
+            if last_saved != self.global_step:
+                self.save()
         finally:
             progress.close()
             writer.flush()

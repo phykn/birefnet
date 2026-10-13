@@ -144,6 +144,9 @@ owns shared channel conversion and resize/padding geometry; `Fit` applies the
 same geometry to images, masks, and native-size restoration. `src/model/`
 owns the network and model checkpoint format, while `src/train/` owns losses,
 optimization, EMA, validation, and atomic training checkpoint writes.
+Each `Trainer` keeps one `Validator` for batch/native-size metrics and one
+`CheckpointStore` for saving and resuming model, optimizer, scheduler, scaler,
+and EMA state. The training loop owns the step count and best-model selection.
 `src/predict/` loads inference models and their run configuration, restores
 predictions, and blends tiles; `src/build/` assembles
 these components from configuration, including the loss shared by training

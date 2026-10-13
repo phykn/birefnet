@@ -59,7 +59,7 @@ def test_sample_palette_pairs_and_cpu_training_resume(tmp_path, tiny_model, monk
         for name in ("last.pth", "last.train.pth", "best_miou.pth"):
             model = load_model(cfg, tmp_path / "weights" / name, torch.device("cpu"))
             torch.testing.assert_close(model(image).logits[-1], expected, rtol=0, atol=0)
-            assert PreprocessSpec.from_meta(model.loaded_meta) == trainer.preprocess
+            assert PreprocessSpec.from_meta(model.loaded_meta) == trainer.validator.preprocess
             assert not {"optimizer", "scheduler", "scaler", "ema"} & model.loaded_meta.keys()
 
 

@@ -3,6 +3,36 @@ import torch
 
 from src.train.schedule import CosineSchedule
 
+def test_shrinking_cycles_keep_a_decay_step():
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    scheduler = CosineSchedule(
+        optimizer, first_cycle_steps=2, cycle_mult=0.1,
+        max_lr=0.1, min_lr=0.001,
+    )
+
+    for _ in range(6):
+        optimizer.step()
+        scheduler.step()
+        assert scheduler.cur_cycle_steps >= 1
+        assert 0.001 <= optimizer.param_groups[0]["lr"] <= 0.1
+
+
+def test_shrinking_cycles_keep_warmup_and_decay():
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    scheduler = CosineSchedule(
+        optimizer, first_cycle_steps=3, cycle_mult=0.1,
+        max_lr=0.1, min_lr=0.001, warmup_steps=1,
+    )
+
+    rates = []
+    for _ in range(8):
+        optimizer.step()
+        scheduler.step()
+        assert scheduler.cur_cycle_steps > scheduler.warmup_steps
+        rates.append(optimizer.param_groups[0]["lr"])
+    assert 0.1 in rates[3:]
 
 def _make(max_lr=1.0, min_lr=0.0, warmup=5, total=20):
     param = torch.nn.Parameter(torch.zeros(1))

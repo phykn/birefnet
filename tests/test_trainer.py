@@ -113,11 +113,11 @@ def test_trainer_step_with_accum(tmp_path):
 def test_trainer_validate_returns_avg_losses(tmp_path):
     trainer = _make_trainer(tmp_path)
     trainer.model.calls = 0
-    metrics = trainer.validate()
+    metrics = trainer.validator.validate()
     assert "loss" in metrics
     assert "seg" in metrics
     assert all(isinstance(v, float) for v in metrics.values())
-    assert trainer.model.calls == len(trainer.valid_loader)
+    assert trainer.model.calls == len(trainer.validator.valid_loader)
 
 
 def test_trainer_get_batch_wraps_around(tmp_path):
@@ -273,8 +273,8 @@ def test_training_rejects_non_finite_loss(tmp_path):
 
 def test_best_selection_uses_multiclass_deployment_miou(tmp_path):
     trainer = _make_trainer(tmp_path)
-    trainer.validate = lambda: {"loss": 0.0}
-    trainer.validate_deploy = lambda: {"deploy_miou": 0.8, "deploy_mdice": 0.85}
+    trainer.validator.validate = lambda: {"loss": 0.0}
+    trainer.validator.validate_deploy = lambda: {"deploy_miou": 0.8, "deploy_mdice": 0.85}
     trainer.train(steps=1, val_freq=1, save_freq=10)
     state = torch.load(tmp_path / "weights" / "best_miou.pth", weights_only=True)
     assert state["num_classes"] == 4
@@ -287,12 +287,12 @@ def test_deployment_validation_preserves_class_three(tmp_path):
     Image.fromarray(np.zeros((8, 12, 3), dtype=np.uint8)).save(image_path)
     Image.fromarray(np.full((8, 12), 3, dtype=np.uint8)).save(mask_path)
     trainer = _make_trainer(tmp_path, preprocess=PreprocessSpec())
-    trainer.valid_loader.dataset.pairs = [(str(image_path), str(mask_path))]
+    trainer.validator.valid_loader.dataset.pairs = [(str(image_path), str(mask_path))]
     with torch.no_grad():
         trainer.model.conv.weight.zero_()
         trainer.model.conv.bias.zero_()
         trainer.model.conv.bias[3] = 20
-    metrics = trainer.validate_deploy()
+    metrics = trainer.validator.validate_deploy()
     assert metrics["deploy_miou"] == 1.0
     assert metrics["deploy_class_3_recall"] == 1.0
 
@@ -306,6 +306,27 @@ def test_training_validates_final_non_frequency_step(tmp_path):
     trainer.train(steps=1, val_freq=2, save_freq=10)
 
     assert validated == [1]
+
+
+@pytest.mark.parametrize(
+    ("val_freq", "expected"),
+    [(1, [(1, 1.0), (2, 2.0)]),
+     (3, [(1, float("-inf")), (2, float("-inf")), (2, 2.0)])],
+)
+def test_final_save_reuses_current_checkpoint_but_keeps_final_selection(
+    tmp_path, val_freq, expected,
+):
+    trainer = _make_trainer(tmp_path)
+    saved = []
+    trainer.save = lambda: saved.append((trainer.global_step, trainer.best_region))
+
+    def evaluate():
+        trainer.best_region = float(trainer.global_step)
+
+    trainer._evaluate = evaluate
+    trainer.train(steps=2, val_freq=val_freq, save_freq=1)
+
+    assert saved == expected
 
 
 @pytest.mark.parametrize(
@@ -336,15 +357,15 @@ def test_native_prediction_uses_saved_preprocess(monkeypatch, tmp_path):
         tmp_path,
         preprocess=PreprocessSpec(is_sem=True),
     )
-    trainer.valid_loader.dataset.pairs = [(str(image_path), str(mask_path))]
+    trainer.validator.valid_loader.dataset.pairs = [(str(image_path), str(mask_path))]
     captured = {}
 
     def fake_predict(model, image, **kwargs):
         captured.update(kwargs)
         return np.zeros((4, *image.shape[:2]), dtype=np.float32)
 
-    trainer.predictor = fake_predict
-    list(trainer.predict_native(trainer.valid_loader))
+    trainer.validator.predictor = fake_predict
+    list(trainer.validator.predict_native(trainer.validator.valid_loader))
 
     assert captured == {"size": 1024, "is_sem": True}
 

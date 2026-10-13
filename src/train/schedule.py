@@ -11,6 +11,7 @@ class CosineSchedule(_LRScheduler):
         optimizer: Wrapped optimizer.
         first_cycle_steps: Step size of the first cycle.
         cycle_mult: Cycle length multiplier applied at each restart.
+            Shrinking cycles retain at least one step after warmup.
         max_lr: Max learning rate of the first cycle.
         min_lr: Minimum learning rate.
         warmup_steps: Linear warmup step size (must be < first_cycle_steps).
@@ -111,7 +112,7 @@ class CosineSchedule(_LRScheduler):
             self.cycle += 1
             self.step_in_cycle -= self.cur_cycle_steps
             self.cur_cycle_steps = (
-                int((self.cur_cycle_steps - self.warmup_steps) * self.cycle_mult)
+                max(1, int((self.cur_cycle_steps - self.warmup_steps) * self.cycle_mult))
                 + self.warmup_steps
             )
 
