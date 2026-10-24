@@ -1,14 +1,16 @@
+import random
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
 from .build.data import build as build_data
 from .build.model import build as build_model
 from .build.trainer import build as build_trainer
-from .config import ROOT, load_config, read_config
+from .config import load_config, read_config
 from .data.split import load as load_splits
 from .data.split import save as save_splits
 
@@ -18,7 +20,7 @@ def load_run(
     config: str | Path | None = None,
 ) -> tuple[DictConfig, Path | None, Path | None]:
     if resume is None:
-        return load_config(config or ROOT / "config/train.yaml"), None, None
+        return load_config(config), None, None
     if config is not None:
         raise ValueError("--config cannot override a resumed run's saved config")
 
@@ -43,22 +45,37 @@ def create_run_dir(root: str | Path = "run") -> Path:
     return target
 
 
+def seed(value: int) -> None:
+    """Fix the split, augmentation and initialization so a run can be repeated."""
+    if type(value) is not int or value < 0:
+        raise ValueError("train.seed must be a non-negative integer")
+    random.seed(value)
+    np.random.seed(value)
+    torch.manual_seed(value)
+
+
 def train(
     resume: str | Path | None = None,
     config: str | Path | None = None,
 ) -> None:
     cfg, checkpoint, run_dir = load_run(resume, config)
+    seed(OmegaConf.select(cfg, "train.seed", default=0))
     saved_splits = load_splits(run_dir) if run_dir is not None else None
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
-    train_loader, valid_loader, splits = build_data(cfg, saved_splits)
-    model = build_model(cfg, load_pretrained=checkpoint is None).to(device)
+    train_loader, splits = build_data(cfg, saved_splits)
+    model = build_model(cfg).to(device)
     target = run_dir if run_dir is not None else create_run_dir()
     trainer = build_trainer(
         cfg=cfg,
         model=model,
         train_loader=train_loader,
-        valid_loader=valid_loader,
+        valid_pairs=splits["valid"],
         save_dir=target,
     )
     if checkpoint is not None:
@@ -79,7 +96,7 @@ def train(
 
     trainer.train(
         steps=cfg.train.steps,
-        val_freq=cfg.train.val_freq,
-        save_freq=cfg.train.save_freq,
+        val_freq=cfg.train.val_every,
+        save_freq=cfg.train.save_every,
     )
     print(f"\nTraining finished. Weights saved to: {target}")

@@ -1,3 +1,0 @@
-birefnet:
-  weight: "weight/BiRefNet-general-epoch_244.pth"
-  num_classes: 4

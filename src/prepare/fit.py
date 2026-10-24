@@ -37,12 +37,13 @@ class Fit:
         return canvas
 
 
-def plan(height: int, width: int, size: int = 1024) -> Fit:
+def plan(height: int, width: int, size: int = 1024, scale: float | None = None) -> Fit:
     if height <= 0 or width <= 0 or size <= 0:
         raise ValueError(
             f"height, width and size must be positive, got {(height, width, size)}"
         )
-    scale = min(size / height, size / width)
+    if scale is None:
+        scale = min(size / height, size / width)
     dst_h = min(size, max(1, int(round(height * scale))))
     dst_w = min(size, max(1, int(round(width * scale))))
     return Fit(

@@ -10,8 +10,6 @@ omegaconf
 tensorboard
 werkzeug>=3.1.9
 tqdm
-fastapi
-httpx2
-pydantic
-uvicorn
+transformers
+matplotlib
 pytest

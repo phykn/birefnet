@@ -1,191 +1,248 @@
 # BiRefNet Multiclass Segmentation
 
-Fine-tune **BiRefNet for multiclass semantic segmentation** on your own image datasets.
-Supports four classes by default, tiled inference, and a FastAPI server.
+Fine-tunes [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) for multiclass
+semantic segmentation (four classes by default). It is built for SEM images,
+where brightness, contrast, focus, and noise change with the operator: training
+imitates those changes so the model learns to ignore them. Development uses the
+public [NEU-Seg steel defect dataset](data/README.md).
 
-## Quick start
+## Setup
 
-Run commands from the repository root.
+Run every command from the repository root. Python 3.10 or newer is required.
 
 ```bash
-pip install -r requirements.txt
+uv venv .venv
+uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-Python 3.10 or newer is required. Keep PyTorch at 2.10 or newer: older
-versions have known checkpoint deserialization vulnerabilities even with
-`weights_only=True`. The Werkzeug floor in `requirements.txt` protects the
-TensorBoard dependency on Windows. Only load checkpoints from trusted sources.
+Run scripts with `.venv/bin/python`, or activate the environment first.
+Keep PyTorch at 2.10 or newer: older versions have known checkpoint
+deserialization vulnerabilities even with `weights_only=True`. Only load
+checkpoints from trusted sources. The Werkzeug floor in `requirements.txt`
+protects the TensorBoard dependency on Windows.
 
-1. Download the [pretrained weights](https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.pth) to `weight/BiRefNet-general-epoch_244.pth`.
-2. Place images and masks with matching filename stems in `data/image/` and `data/mask/`.
-3. Set data paths and training options in `config/train.yaml`. Set the class count in `config/model.yaml`.
+Download two pretrained models into `weight/`:
 
-Masks must be **single-channel or palette images containing class IDs 0-3**. RGB masks are unsupported; `255` is ignored.
-The included [four synthetic pairs](data/README.md) are pipeline fixtures. Use your own annotated data for training and evaluation.
+1. [BiRefNet weights](https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.pth)
+   to `weight/BiRefNet-general-epoch_244.pth`.
+2. Depth Anything V2-Small. Skip this when `model.depth` is `false`.
+
+   ```bash
+   .venv/bin/hf download depth-anything/Depth-Anything-V2-Small-hf --local-dir weight/Depth-Anything-V2-Small-hf
+   ```
+
+Put training images in `data/train/image/` and masks in `data/train/mask/`;
+an image and its mask share a filename stem (`0001.jpg` ↔ `0001.png`), and a
+file without a partner stops training with an error. Masks
+are single-channel or palette images whose pixel values are class IDs `0` to
+`model.classes - 1`. RGB masks are rejected. The value `255` means "ignore":
+use it for pixels outside the region of interest, and no loss or metric counts
+them.
 
 ## Training
 
 ```bash
-python run_train.py --config config/train.yaml
+python run_train.py
+python run_train.py --config my.yaml
 python run_train.py --resume run/<run-id>/weights/last.train.pth
 ```
 
-The backbone is always frozen; only the squeeze module and decoder are trained.
-BatchNorm statistics remain frozen. CUDA is used when available.
-`train.warmup_steps: 0` starts directly at `max_lr`; a positive value ramps
-from `min_lr` before cosine decay.
-`train.weight_decay` must be finite and non-negative; `train.max_grad_norm`
-must be finite and positive. Invalid EMA decay in a resume checkpoint is rejected
-before model and optimizer state are loaded.
-The segmentation objective uses cross-entropy, Dice overlap loss, and boundary
-cross-entropy, plus the model's auxiliary guidance loss. Dice is fixed; IoU
-remains an evaluation metric, not an additional training loss.
+`--config` loads a file over `config.yaml`, so it only needs the keys it
+changes. Each run gets its own folder:
 
-Configuration keeps dataset paths, `is_sem`, augmentation, batch/worker
-counts, training, and loss options available for experiments. Backbone
-channel widths use the model's architecture defaults; ignored labels default to
-`255`. Loader pinning follows CUDA availability, persistent workers follow
-`num_workers > 0`, and prefetch defaults to 2. These defaults no longer need to
-be repeated in YAML. Existing explicit overrides in saved runs are still read.
-Batch size and prefetch must be positive integers, and worker count a
-non-negative integer. Pinning and persistent-worker overrides must be YAML
-booleans (`true` or `false`, without quotes).
-
-Results are saved under `run/<run-id>/`. `best_miou.pth` is selected by validation
-mIoU on native-size predictions,
-`last.pth` is the latest model, and `last.train.pth` includes the state needed to resume.
-`last_ema.pth` contains a separate full model with EMA weights (`train.ema_decay`, default 0.99),
-updated only after successful optimizer steps. EMA is used for saving only;
-validation and best-model selection use the live model. Training checkpoints
-preserve EMA state; older checkpoints without EMA initialize it from restored
-model weights. Frozen parameters are reused and persistent model buffers are tracked.
-To resume, keep `config.yaml`, `train.csv`, and `valid.csv` beside the run's
-`weights/` directory. The current dataset must match the saved file pairs;
-split membership and order are restored before the model is allocated.
-`--resume` uses the saved config and cannot be combined with `--config`.
-Random sampling and augmentation sequences are not restored.
-Keep related images and crops from the same source in the same split. Automatic splitting operates on individual images.
-
-### SEM inputs and augmentation
-
-Training, validation, and inference inputs are fixed at 1024x1024 to match the
-configured pretrained weights. Input size has no config or CLI override.
-Checkpoints declaring another input size are rejected.
-
-The default training config uses `data.is_sem: true`: grayscale,
-1–99 percentile normalization, and two successive z-score/CLAHE passes.
-Training crops and rotates/flips the grayscale image, applies brightness/contrast
-jitter, then derives all three channels from that same augmented image.
-Each training sample has one augmented image. Brightness is sampled uniformly
-from -0.20 to +0.20, and contrast gain from 0.60 to 1.40.
-`augment.brightness` and `augment.contrast` set these limits and must be finite.
-Validation has no random jitter.
-ImageNet normalization follows feature generation and edge masking.
-
-`data.crop_prob: 1.0` crops every training sample. A square side length is drawn
-uniformly from `data.min_crop_size` (default 256) through 1024, inclusive; each
-axis is clipped to the available source pixels for smaller images. The minimum
-must be an integer from 1 to 1024. Lowering `crop_prob` also allows whole images.
-After cropping, the image is resized with its aspect ratio preserved until the
-long side reaches 1024, then padded to 1024x1024. Masks and crop-edge flags use
-the same geometry with nearest-neighbor resizing; padding labels are ignored.
-Crop centers are selected randomly, independently of mask labels.
-`augment.masking_prob: 1.0` attempts edge masking on every training sample
-(`0.0` disables it). Each side hides at most 25% of the image, retaining at
-least 50% of the pre-masking valid ROI pixels. Sampling retries at most 32
-times, then leaves the sample unchanged if no valid candidate is found.
-Hidden areas receive a black, white, mid-gray, or random grayscale fill. Hidden labels use `data.ignore_index` (default `255`).
-
-Encode ROI-exterior pixels as `255` in the input class-ID mask; a separate ROI
-file is not loaded. Feature statistics use the whole crop, without GT-mask
-statistics, so the same conversion is available at inference. Validation and
-inference disable random augmentation and retain aspect-preserving resize and
-padding. Tiled SEM inference derives features independently for each tile.
-Set `data.is_sem: false` for ordinary RGB input. Checkpoints record the boolean
-`is_sem` setting, which validation and inference reuse automatically. Legacy
-`rgb` and `sem_features` checkpoint metadata are accepted; the removed
-`gray_repeat` and `gray_features` representations cannot map to this boolean
-and require the earlier code to run their checkpoints.
-
-Split original images before online crops. Externally generated crops from one
-source still need to be assigned to the same split. Before selecting a trained
-SEM model, compare mIoU/Dice and porosity changes under brightness, contrast,
-and edge-background perturbations on the same retained ROI. The included
-synthetic fixtures establish pipeline behavior, not SEM robustness.
-
-## Data and model checks
-
-```bash
-# Inspect loader inputs, augmentations, masks, and valid regions
-python scripts/check_data.py --batches 2
-
-# Check gradient connectivity and finite values for trainable parameters
-python scripts/check_gradients.py
-
-# Save native-size class IDs, an overlay, and a comparison image
-python scripts/predict.py --weight run/<run-id>/weights/best_miou.pth --image data/image/sample_01.png
+```
+run/<run-id>/
+├── config.yaml      settings used by this run
+├── train.csv        image/mask filenames in the training split
+├── valid.csv        image/mask filenames in the validation split
+├── logs/            TensorBoard logs (tensorboard --logdir run)
+└── weights/
+    ├── best_miou.pth    EMA weights with the best validation mIoU
+    ├── last.pth         latest weights
+    ├── last_ema.pth     latest EMA weights
+    └── last.train.pth   latest weights plus optimizer state, for --resume
 ```
 
-Outputs are saved under `run/checks/`. Use each script's `--help` for options.
-For prediction, add `--mask` to display ground truth, `--tiles 1 3` for tiled inference,
-or `--class-id 3` to save a class probability PNG.
-Prediction reuses the saved preprocessing settings and ignored-label index.
-Palette indices in `labels.png` are class IDs.
+`--resume` reads `config.yaml`, `train.csv`, and `valid.csv` from the run
+folder, so keep them next to `weights/`; it cannot be combined with `--config`.
+The dataset folders must still hold exactly the saved file pairs. The run
+continues from the saved step, but the random augmentation sequence starts over.
 
-## API
+The split is drawn per image. Keep crops or related images from one source
+together in the same split, or validation will see near-copies of training data.
+
+Training uses CUDA, then an Apple GPU (MPS), then the CPU, whichever is
+available first. On MPS the decoder's deformable convolutions use a
+`grid_sample` version, because torchvision's has no MPS backward; both give the
+same results, so training runs fully on the GPU.
+
+## Configuration
+
+Every setting lives in `config.yaml`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `model.weight` | `weight/BiRefNet-general-epoch_244.pth` | Pretrained BiRefNet weights |
+| `model.depth` | `true` | Feed Depth Anything depth into the decoder ([Depth](#depth)) |
+| `model.depth_weight` | `weight/Depth-Anything-V2-Small-hf` | Local Depth Anything folder |
+| `model.classes` | `4` | Number of classes |
+| `data.image_dir`, `data.mask_dir` | `data/train/image`, `data/train/mask` | Training images and masks |
+| `data.valid_ratio` | `0.1` | Share of pairs held out for validation |
+| `data.sem` | `true` | SEM input conversion ([Input](#input)); `false` for ordinary RGB |
+| `augment.zoom` | `[0.5, 2.0]` | Magnification range |
+| `augment.hide_edges` | `0.3` | Share of samples with hidden edges |
+| `augment.brightness` | `0.2` | Brightness shift, up to ±0.2 of full range |
+| `augment.contrast` | `0.4` | Contrast gain between 0.6 and 1.4 |
+| `augment.gamma` | `[0.7, 1.5]` | Gamma range |
+| `augment.light` | `0.2` | Uneven lighting, up to ±20% across the image |
+| `augment.blur` | `1.0` | Largest blur sigma, in pixels |
+| `augment.noise` | `0.05` | Largest grain standard deviation, as a share of 0–255 |
+| `loader.*` | | PyTorch `DataLoader` options of the same name |
+| `train.seed` | `0` | Fixes the split, augmentation, and initialization |
+| `train.steps` | `5000` | Optimizer steps |
+| `train.val_every`, `train.save_every` | `250`, `500` | Validation and save intervals, in steps |
+| `train.lr`, `train.min_lr` | `1e-4`, `1e-6` | Peak and final learning rate |
+| `train.warmup` | `200` | Steps rising from `min_lr` to `lr`; `0` starts at `lr` |
+| `train.weight_decay` | `0.01` | AdamW weight decay |
+| `train.grad_clip` | `1.0` | Gradient norm limit |
+| `train.accum` | `4` | Batches per optimizer step |
+| `train.ema` | `0.995` | EMA decay |
+| `loss.ce`, `loss.dice`, `loss.boundary`, `loss.aux` | `1`, `1`, `0.5`, `1` | Loss weights ([Losses](#losses)) |
+| `loss.boundary_width` | `3` | Band around class edges for the boundary loss, in pixels |
+| `loss.label_blur` | `1.0` | Mask edge blur, in pixels ([Losses](#losses)) |
+| `loss.teacher`, `loss.teacher_start` | `0.3`, `1000` | EMA teacher share and start step ([Losses](#losses)) |
+
+`data.ignore_index` (default `255`) changes the ignore value. The `loader` keys
+are `batch_size`, `num_workers`, `prefetch_factor`, `persistent_workers`,
+`pin_memory`, and `drop_last`. Booleans are YAML `true`/`false` without quotes.
+Pinning applies only on CUDA, and the two worker options only when
+`num_workers > 0`.
+
+## How training works
+
+Only the squeeze module and the decoder train. The Swin backbone, its
+BatchNorm statistics, and Depth Anything stay frozen.
+
+### Input
+
+Every image is fitted into a 1024×1024 input, keeping its aspect ratio and
+padding the rest; the padding is ignored by every loss. The size is fixed by the
+pretrained weights and cannot be changed.
+
+With `data.sem: true`, the image is converted to grayscale, clipped to
+mean ± 3 standard deviations, rescaled to 0–255, and repeated in all three
+channels. The statistics come from the whole image, including pixels the mask
+ignores, and never from the mask itself, so prediction converts images the same
+way; tiled prediction converts each tile on its own.
+
+### Augmentation
+
+Each training sample is changed in this order, all before the SEM conversion
+above, so the conversion sees what a real shot would give it:
+
+1. **Zoom**: a factor drawn log-uniformly from `augment.zoom`, relative to
+   fitting the whole image. Above 1, a random square window of side
+   `long side / zoom` is cut out and enlarged; below 1, the whole image shrinks
+   and the rest is padding. Window edges cut through the image are marked, and
+   the boundary loss skips them.
+2. **Rotate and flip**: a random multiple of 90° and an optional mirror.
+3. **Brightness and contrast**, then **gamma** (log-uniform).
+4. **Uneven light**: a linear ramp in a random direction brightens one side and
+   darkens the other.
+5. **Blur** with a sigma between 0 and `augment.blur`, like a slightly
+   unfocused shot.
+6. **Grain**: Gaussian noise with a standard deviation between 0 and
+   `augment.noise`, like a fast scan.
+7. **Hidden edges** on `augment.hide_edges` of the samples: each side loses up to
+   25% of the image, filled with black, white, mid-gray, or a random gray, while
+   at least half of the labeled pixels stay visible. Hidden pixels get the
+   ignore label. They stand in for an uncropped info bar or a dark rim, so they
+   also enter the SEM conversion statistics.
+
+Validation and prediction use no augmentation.
+
+### Losses
+
+The loss adds cross-entropy, Dice, a boundary cross-entropy on a band
+`loss.boundary_width` pixels wide around class edges, and BiRefNet's auxiliary
+edge-guidance loss. Side outputs at coarser decoder levels share the
+cross-entropy and Dice terms.
+
+Masks are not trusted completely: hand-drawn edges are often a pixel or two
+off, and zooming moves them too. Two settings soften the targets:
+
+- `loss.label_blur: 1.0` blurs each class mask with a 1-pixel Gaussian, so
+  targets mix neighboring classes only near class edges. Ignored pixels and
+  padding never blur into the targets.
+- `loss.teacher: 0.3` mixes in the EMA model's prediction: targets become 70%
+  mask and 30% teacher, so where the averaged model keeps disagreeing with a
+  mask, the target leans its way. The teacher reuses the frozen backbone and
+  depth features, so it costs one extra decoder pass. The share stays 0 for the
+  first `loss.teacher_start` steps, while the average is still poor, then rises
+  linearly to its full value by twice that step.
+
+Setting both to `0` trains on the masks exactly as drawn.
+
+### Depth
+
+With `model.depth: true`, a frozen Depth Anything V2-Small runs inside BiRefNet
+on the exact input tensor, after every augmentation, so training and prediction
+compute depth the same way and nothing is precomputed. Each image's depth is
+scaled to 0–1 over its own pixels (2nd–98th percentile); padding stays 0. A
+small branch adds depth next to the image patches at every decoder level. Its
+last layers start at zero, so training begins at the pretrained decoder and uses
+depth only as far as it helps.
+
+### Validation and checkpoints
+
+Every `train.val_every` steps, the EMA weights predict each validation image
+whole, at its own size, exactly as prediction does, and are scored by mIoU.
+The best score is saved as `best_miou.pth`. The EMA weights are updated after
+every optimizer step and also serve as the teacher above.
+
+Checkpoints store only the trained part (squeeze module and decoder), about a
+tenth of the full model. Loading one first builds BiRefNet from `model.weight`
+and Depth Anything from `model.depth_weight`, then puts the trained part on top,
+so keep those files unchanged for as long as you need the run. Checkpoints from
+earlier versions of this code cannot be loaded.
+
+## Checking data and predicting
 
 ```bash
-python run_api.py --host 127.0.0.1 --port 8000 --weight run/<run-id>/weights/best_miou.pth
+# Random original image/mask pairs
+python scripts/01_dataset.py
+
+# Random training samples after augmentation
+python scripts/02_argument.py
+
+# Input, predicted class map, overlay, and optional ground truth
+python scripts/03_predict.py --weight run/<run-id>/weights/best_miou.pth --image data/test/image/000001.jpg
 ```
 
-Open `http://127.0.0.1:8000/docs` for the API documentation. Send `base64_str` to `POST /predict` to receive a base64-encoded class ID PNG.
-Use `--device cuda` for GPU inference, or `--device cuda:1` to select another GPU.
-Mixed precision follows the selected GPU's native BF16 support, with FP16 as the fallback.
-Both the API and prediction script default
-to the checkpoint's run config when available, then model defaults. `--config`
-selects an explicit configuration.
-The API reads the checkpoint's preprocessing settings by default and uses the
-same Pillow RGB decoding as the training loader, including for 16-bit PNGs.
+The scripts only open a matplotlib window; they write no files.
+`03_predict.py --help` lists its options: `--mask` adds the ground truth,
+`--tiles 1 3` averages predictions over the whole image and a 3×3 tile grid,
+and `--class-id 3` adds that class's probability map. Prediction reuses the
+checkpoint's input conversion and ignore value, and the run's `config.yaml`
+unless `--config` names another file.
 
-API requests are bounded before JSON parsing (base64 limit plus 64 KiB of
-JSON overhead, approximately 42.73 MiB). Images may contain at most 32 MiB of
-encoded data and 36 million pixels. The native prediction array must also fit
-within 256 MiB (`height * width * num_classes * 4`); this is an array budget,
-not a limit on total process or GPU memory. Oversized inputs return HTTP 413.
-`tiles` must contain positive JSON integers with a total of at most 64 patches
-(`sum(grid * grid for grid in tiles)`); invalid tile settings return HTTP 422.
-Inference requests run one at a time. When exposing the API beyond localhost,
-bound concurrent connections and request rates at the serving proxy, since
-waiting request bodies still occupy memory.
+`--device cuda` (or `cuda:1`) predicts on a GPU, with BF16 where the GPU
+supports it natively and FP16 otherwise. The default is the CPU.
 
-## Development
+## Code layout
 
-`src/data/` owns image/mask pairs, split membership, CSV serialization, and
-training augmentation. Splits and datasets keep each image and mask together
-as a pair; CSVs store their filenames so dataset directories can be relocated.
-`src/prepare/`
-owns shared channel conversion and resize/padding geometry; `Fit` applies the
-same geometry to images, masks, and native-size restoration. `src/model/`
-owns the network and model checkpoint format, while `src/train/` owns losses,
-optimization, EMA, validation, and atomic training checkpoint writes.
-Each `Trainer` keeps one `Validator` for batch/native-size metrics and one
-`CheckpointStore` for saving and resuming model, optimizer, scheduler, scaler,
-and EMA state. The training loop owns the step count and best-model selection.
-`src/precision.py` chooses mixed precision for both training and inference from
-the model's device.
-`src/predict/` loads inference models and their run configuration, restores
-predictions, and blends tiles; `src/build/` assembles
-these components from configuration, including the loss shared by training
-and gradient inspection. `src/run.py` owns training run creation, saved config
-and split restoration, and the training launch; `run_train.py` handles CLI
-arguments. `src/config.py` reads and migrates config values. `backend/` contains
-the HTTP API and `scripts/` contains inspection tools.
+| Folder | Holds |
+|---|---|
+| `src/data/` | Image/mask pairing, train/valid splits and their CSV files, augmentation, the training dataset |
+| `src/prepare/` | Input conversion and the resize/padding geometry shared by training and prediction |
+| `src/model/` | The network, Depth Anything wrapper, and checkpoint format |
+| `src/train/` | Losses, trainer, EMA, learning rate schedule, validation, training checkpoints |
+| `src/predict/` | Loading a trained model, whole-image and tiled prediction |
+| `src/build/` | Builds the dataset, model, loss, and trainer from the config |
+
+`src/run.py` creates or resumes a run and starts training; `run_train.py` reads
+its command-line arguments. Run the tests with:
 
 ```bash
 python -m pytest -q
 ```
-
-The [repository audit](AUDIT.md) records the module map, corrected findings,
-verification results, and remaining deployment and hardware limits.
-
-Based on [BiRefNet](https://github.com/ZhengPeng7/BiRefNet). Current checkpoints store the full model and are incompatible with earlier LoRA and binary segmentation checkpoints.

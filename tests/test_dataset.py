@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from src.data.augment import crop, edge_mask, jitter
+from src.data.augment import blur, edge_mask, gamma, illumination, jitter, noise, zoom
 from src.data.dataset import MaskDataset
 from src.data.image import read_image, read_mask
 
@@ -44,7 +44,7 @@ def test_class_indices_survive_palette_loading_and_letterbox(tmp_path, palette):
 
 def test_training_image_matches_label_geometry(tmp_path):
     image_path, mask_path, _ = _write_pair(tmp_path)
-    sample = MaskDataset([(str(image_path), str(mask_path))], size=32, min_crop_size=32, train=True, crop_prob=0)[0]
+    sample = MaskDataset([(str(image_path), str(mask_path))], size=32)[0]
     assert sample["image"].shape == (3, 32, 32)
     assert set(sample) == {"image", "mask", "valid", "cut"}
     assert sample["mask"].shape == sample["valid"].shape[1:]
@@ -62,36 +62,53 @@ def test_rejects_invalid_indices_and_rgb_masks(tmp_path):
         read_mask(str(mask_path))
 
 
-def test_crop_marks_only_edges_cut_from_source(monkeypatch):
+def test_zoom_marks_only_edges_cut_from_source(monkeypatch):
     image = np.zeros((20, 30, 3), dtype=np.uint8)
     mask = np.zeros((20, 30), dtype=np.uint8)
     picks = iter((0, 15))
-    monkeypatch.setattr("random.randrange", lambda *_: next(picks))
-    _, _, cut = crop(image, mask, size=10, crop_prob=1, min_size=10)
+    monkeypatch.setattr("random.randint", lambda *_: next(picks))
+    _, _, cut, side = zoom(image, mask, (3.0, 3.0))
+    assert side == 10
     assert not cut[0, 1:-1].any()
     assert cut[-1].all() and cut[:, 0].all() and cut[:, -1].all()
 
 
-def test_crop_position_does_not_depend_on_mask_labels(monkeypatch):
+def test_zoom_position_does_not_depend_on_mask_labels(monkeypatch):
     image = np.arange(20 * 20 * 3, dtype=np.uint8).reshape(20, 20, 3)
     mask = np.zeros((20, 20), dtype=np.uint8)
     boundary_mask = mask.copy()
     boundary_mask[:, 10:] = 2
-    monkeypatch.setattr("random.randrange", lambda limit: limit // 2)
-    plain, _, _ = crop(image, mask, 6, 1, 6)
-    with_boundary, labels, _ = crop(image, boundary_mask, 6, 1, 6)
+    monkeypatch.setattr("random.randint", lambda low, high: high // 2)
+    plain, _, _, _ = zoom(image, mask, (10 / 3, 10 / 3))
+    with_boundary, labels, _, _ = zoom(image, boundary_mask, (10 / 3, 10 / 3))
     np.testing.assert_array_equal(plain, with_boundary)
     np.testing.assert_array_equal(labels, boundary_mask[7:13, 7:13])
 
 
-@pytest.mark.parametrize("prob, shape", [(0.0, (20, 30)), (0.3, (20, 30)),
-                                        (0.5, (10, 10)), (1.0, (10, 10))])
-def test_crop_probability_selects_crop_instead_of_full_image(monkeypatch, prob, shape):
-    monkeypatch.setattr("random.random", lambda: 0.4)
-    image = np.zeros((20, 30, 3), np.uint8)
-    mask = np.zeros((20, 30), np.uint8)
-    result, _, _ = crop(image, mask, 10, prob, 10)
-    assert result.shape[:2] == shape
+@pytest.mark.parametrize("scale, side, shape", [(0.5, 2800, (1200, 1400)), (1.0, 1400, (1200, 1400)),
+                                               (2.0, 700, (700, 700)), (4.0, 350, (350, 350))])
+def test_zoom_window_follows_magnification(monkeypatch, scale, side, shape):
+    monkeypatch.setattr("random.randint", lambda low, high: high // 2)
+    mask = np.indices((1200, 1400))[1].astype(np.uint16)
+    image = np.repeat(mask[..., None], 3, axis=2)
+    patch, labels, cut, picked = zoom(image, mask, (scale, scale))
+    assert picked == side
+    assert patch.shape[:2] == labels.shape == cut.shape == shape
+    np.testing.assert_array_equal(patch[..., 0], labels)
+    assert cut.any() == (shape != (1200, 1400))
+
+
+def test_zoom_out_pads_and_excludes_padding(tmp_path, monkeypatch):
+    image_path, mask_path, _ = _write_pair(tmp_path)
+    monkeypatch.setattr("src.data.dataset.flip", lambda *items: items)
+    sample = MaskDataset([(str(image_path), str(mask_path))], size=32,
+                         zoom=(0.5, 0.5))[0]
+    # Half of the full fit (19x32): the 12x20 image becomes 10x16 in the middle.
+    outside = np.ones((32, 32), bool)
+    outside[11:21, 8:24] = False
+    assert not sample["valid"][0][outside].any()
+    assert np.all(sample["mask"][outside] == 255)
+    assert sample["valid"][0, 11:21, 8:24].sum() >= 10 * 16 - 1
 
 
 def test_sem_jitter_precedes_channels_and_resize_precedes_padding(tmp_path, monkeypatch):
@@ -108,7 +125,7 @@ def test_sem_jitter_precedes_channels_and_resize_precedes_padding(tmp_path, monk
 
     monkeypatch.setattr("src.data.dataset.jitter", jitter_gray)
     sample = MaskDataset([(str(image_path), str(mask_path))], size=32,
-                         train=True, is_sem=True, crop_prob=1, min_crop_size=32)[0]
+                         is_sem=True)[0]
     expected, valid, fit = fit_image(convert(np.full((12, 20), 70, np.uint8), True), size=32)
     expected_labels = fit_mask(labels, fit)[0].astype(np.int64)
     expected_labels[valid[0] == 0] = 255
@@ -119,17 +136,15 @@ def test_sem_jitter_precedes_channels_and_resize_precedes_padding(tmp_path, monk
     assert not sample["valid"][0, :6].any()
 
 
-def test_sem_validation_matches_inference_preprocessing(tmp_path):
+def test_training_without_augmentation_matches_inference_preprocessing(tmp_path, monkeypatch):
     from src.prepare.fit import fit_tensor
 
     image_path, mask_path, _ = _write_pair(tmp_path)
-    dataset = MaskDataset([(str(image_path), str(mask_path))], size=32,
-                          is_sem=True, masking_prob=1)
-    first, second = dataset[0], dataset[0]
+    monkeypatch.setattr("src.data.dataset.flip", lambda *items: items)
+    sample = MaskDataset([(str(image_path), str(mask_path))], size=32,
+                         is_sem=True, brightness=0, contrast=0)[0]
     expected, _ = fit_tensor(read_image(str(image_path)), size=32, is_sem=True)
-    np.testing.assert_array_equal(first["image"], expected)
-    np.testing.assert_array_equal(first["image"], second["image"])
-    assert set(first) == {"image", "mask", "valid", "cut"}
+    np.testing.assert_array_equal(sample["image"], expected)
 
 
 def test_edge_mask_preserves_sparse_roi():
@@ -177,8 +192,7 @@ def test_edge_mask_updates_dataset_valid(tmp_path, monkeypatch):
     monkeypatch.setattr("src.data.dataset.flip", lambda *items: items)
     monkeypatch.setattr("random.randint", lambda low, high: max(low, high // 2))
     sample = MaskDataset([(str(image_path), str(mask_path))], size=20,
-                         train=True, is_sem=True, crop_prob=1,
-                         masking_prob=1, min_crop_size=20)[0]
+                         is_sem=True, masking_prob=1)[0]
     # The 12x20 image is centered with four padding rows; the first image row is hidden.
     assert np.all(sample["mask"][4] == 255)
     assert not sample["valid"][0, 4].any()
@@ -186,49 +200,21 @@ def test_edge_mask_updates_dataset_valid(tmp_path, monkeypatch):
 
 
 def test_full_size_crop_keeps_native_pixels(tmp_path, monkeypatch):
-    from src.prepare.convert import normalize
+    from src.prepare.convert import convert, normalize
 
     gray = np.arange(24 * 40, dtype=np.uint8).reshape(24, 40)
     image_path, mask_path = tmp_path / "image.png", tmp_path / "mask.png"
     Image.fromarray(gray).save(image_path)
     Image.fromarray((gray % 4).astype(np.uint8)).save(mask_path)
     monkeypatch.setattr("src.data.dataset.flip", lambda *items: items)
-    monkeypatch.setattr("random.randrange", lambda limit: limit // 2)
-    sample = MaskDataset([(str(image_path), str(mask_path))], size=16, min_crop_size=16, train=True,
-                         is_sem=True, crop_prob=1,
+    monkeypatch.setattr("random.randint", lambda low, high: high // 2)
+    sample = MaskDataset([(str(image_path), str(mask_path))], size=16,
+                         is_sem=True, zoom=(2.5, 2.5),
                          brightness=0, contrast=0)[0]
     patch = gray[4:20, 12:28]
-    expected = normalize(np.repeat(patch[..., None], 3, axis=-1))[..., 0]
+    expected = normalize(convert(patch, is_sem=True))[..., 0]
     np.testing.assert_array_equal(sample["image"][0], expected)
     np.testing.assert_array_equal(sample["mask"], patch % 4)
-
-
-@pytest.mark.parametrize("side", [256, 637, 1024])
-def test_random_crop_size_range(monkeypatch, side):
-    def pick(low, high):
-        assert (low, high) == (256, 1024)
-        return side
-
-    monkeypatch.setattr("random.randint", pick)
-    monkeypatch.setattr("random.randrange", lambda limit: limit // 2)
-    mask = np.indices((1200, 1400))[1].astype(np.uint16)
-    image = np.repeat(mask[..., None], 3, axis=2)
-    patch, labels, cut = crop(image, mask, 1024, 1, 256)
-    assert patch.shape == (side, side, 3)
-    np.testing.assert_array_equal(patch[..., 0], labels)
-    assert cut[0].all() and cut[-1].all()
-    assert cut[:, 0].all() and cut[:, -1].all()
-
-
-def test_crop_clips_to_source_without_padding(monkeypatch):
-    monkeypatch.setattr("random.randint", lambda low, high: low)
-    mask = np.zeros((100, 400), np.uint8)
-    image = np.zeros((100, 400, 3), np.uint8)
-    patch, labels, cut = crop(image, mask, 1024, 1, 256)
-    assert patch.shape == (100, 256, 3)
-    assert labels.shape == cut.shape == (100, 256)
-    assert not cut[0, 1:-1].any()
-    assert not cut[-1, 1:-1].any()
 
 
 @pytest.mark.parametrize("bright, contrast, expected", [(0.2, 0.0, 115), (-0.2, 0.0, 13),
@@ -240,8 +226,80 @@ def test_jitter_samples_both_directions(monkeypatch, bright, contrast, expected)
     assert np.all(result == expected)
 
 
+def test_gamma_bends_midtones_and_keeps_ends(monkeypatch):
+    monkeypatch.setattr("random.uniform", lambda low, high: np.log(2.0))
+    result = gamma(np.array([0, 128, 255], np.uint8), (2.0, 2.0))
+    assert result.tolist() == [0, 64, 255]
+
+
+def test_illumination_ramps_across_the_image(monkeypatch):
+    values = iter((0.0, 0.3))
+    monkeypatch.setattr("random.uniform", lambda low, high: next(values))
+    result = illumination(np.full((4, 5), 100, np.uint8), 0.3)
+    # Angle 0 ramps left to right: 0.7x on the left edge, 1.3x on the right.
+    assert np.all(result[:, 0] == 70) and np.all(result[:, -1] == 130)
+    assert np.all(result[:, 2] == 100)
+
+
+def test_blur_softens_a_step_edge(monkeypatch):
+    monkeypatch.setattr("random.uniform", lambda low, high: 1.0)
+    image = np.zeros((9, 9), np.uint8)
+    image[:, 5:] = 200
+    result = blur(image, 1.0)
+    assert 0 < result[4, 4] < result[4, 5] < 200
+    assert result[4, 0] == 0 and result[4, -1] == 200
+
+
+def test_noise_adds_grain_of_the_drawn_strength(monkeypatch):
+    monkeypatch.setattr("random.uniform", lambda low, high: 0.05)
+    result = noise(np.full((200, 200), 128, np.uint8), 0.05).astype(np.float32)
+    assert abs(result.mean() - 128) < 1
+    assert abs(result.std() - 0.05 * 255) < 0.5
+
+
+def test_zero_blur_and_noise_keep_the_image():
+    image = np.arange(64, dtype=np.uint8).reshape(8, 8)
+    np.testing.assert_array_equal(blur(image, 0.0), image)
+    np.testing.assert_array_equal(noise(image, 0.0), image)
+
+
+@pytest.mark.parametrize("name, value", [("zoom", (0.0, 2.0)), ("zoom", (2.0, 1.0)),
+                                         ("zoom", (0.5, float("inf"))), ("gamma", (-1.0, 1.0)),
+                                         ("gamma", (float("nan"), 1.0)), ("illumination", 1.0),
+                                         ("illumination", -0.1),
+                                         ("blur", -1.0), ("blur", float("inf")), ("noise", 1.0),
+                                         ("noise", -0.1)])
+def test_training_dataset_rejects_bad_photometric_ranges(name, value):
+    with pytest.raises(ValueError, match=name):
+        MaskDataset([], **{name: value})
+
+
 @pytest.mark.parametrize("name", ["brightness", "contrast"])
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
 def test_training_dataset_rejects_nonfinite_jitter(name, value):
     with pytest.raises(ValueError, match=name):
-        MaskDataset([], train=True, **{name: value})
+        MaskDataset([], **{name: value})
+
+
+def test_hidden_edges_enter_the_z_score(tmp_path, monkeypatch):
+    from src.prepare.convert import convert
+    from src.prepare.fit import fit_image
+
+    image_path, mask_path, _ = _write_pair(tmp_path)
+    monkeypatch.setattr("src.data.dataset.flip", lambda *items: items)
+    hidden = []
+
+    def hide_left(image, mask, ignore_index):
+        assert image.ndim == 2  # still the raw gray image, before the z-score
+        image, mask = image.copy(), mask.copy()
+        image[:, :5] = 255
+        mask[:, :5] = ignore_index
+        hidden.append(image)
+        return image, mask
+
+    monkeypatch.setattr("src.data.dataset.edge_mask", hide_left)
+    sample = MaskDataset([(str(image_path), str(mask_path))], size=32, is_sem=True,
+                         masking_prob=1, brightness=0, contrast=0)[0]
+    expected, _, _ = fit_image(convert(hidden[0], is_sem=True), size=32)
+    np.testing.assert_array_equal(sample["image"], expected)
+    assert np.all(sample["mask"][:, :8] == 255)

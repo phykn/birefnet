@@ -3,10 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import src.model.swin as swin_model
 from src.model import BiRefNet, Output
 from src.model.decoder.net import Decoder
-from src.model.swin import BasicLayer
 
 
 class TinyBackbone(nn.Module):
@@ -93,79 +91,35 @@ def test_guidance_marks_foreground_class_interfaces():
     assert not label.requires_grad
 
 
-def test_checkpointed_basic_layer_skips_checkpoint_without_grad(monkeypatch):
-    layer = BasicLayer(
-        dim=12,
-        depth=1,
-        num_heads=2,
-        window_size=4,
-        mlp_ratio=2.0,
-        drop_path=0.0,
-        downsample=None,
-        use_checkpoint=True,
-    ).eval()
-
-    def fail(*args, **kwargs):
-        raise AssertionError("inference must not use gradient checkpointing")
-
-    monkeypatch.setattr("src.model.swin.checkpoint.checkpoint", fail)
-    with torch.inference_mode():
-        output, *_ = layer(torch.randn(1, 64, 12), 8, 8)
-
-    assert output.shape == (1, 64, 12)
-
-
-def test_checkpointed_basic_layer_keeps_checkpoint_with_grad(monkeypatch):
-    layer = BasicLayer(
-        dim=12,
-        depth=1,
-        num_heads=2,
-        window_size=4,
-        mlp_ratio=2.0,
-        drop_path=0.0,
-        downsample=None,
-        use_checkpoint=True,
-    ).eval()
-    original = swin_model.checkpoint.checkpoint
-    calls = []
-
-    def tracked(*args, **kwargs):
-        calls.append(1)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(swin_model.checkpoint, "checkpoint", tracked)
-    layer(torch.randn(1, 64, 12), 8, 8)
-
-    assert calls == [1]
-
-
-def test_full_checkpoint_predictor_skips_missing_base_weights(tiny_model, tmp_path):
+def test_predictor_loads_base_weights_then_trained_part(tiny_model, tmp_path):
     from omegaconf import OmegaConf
+    from src.model.checkpoint import FORMAT, TRAINED
     from src.predict.model import load as load_model
 
+    base = tmp_path / "base.pth"
+    torch.save(tiny_model.state_dict(), base)
+    with torch.no_grad():
+        tiny_model.decoder.conv_out1[0].bias.add_(1.0)
+    trained = {key: value for key, value in tiny_model.state_dict().items() if key.startswith(TRAINED)}
     path = tmp_path / "model.pth"
-    torch.save({
-        "format": "birefnet-multiclass-v1", "model": tiny_model.state_dict(),
-        "num_classes": 4, "preprocess": {"size": 1024},
-        "teacher": {"legacy_weight": torch.ones(2)},
-    }, path)
-    cfg = OmegaConf.create({"birefnet": {
-        "weight": "absent_base.pth", "channels": [32, 16, 8, 4],
-        "grad_checkpoint": False, "num_classes": 4,
-    }})
+    torch.save({"format": FORMAT, "model": trained, "num_classes": 4,
+                "preprocess": {"size": 1024}, "optimizer": {}}, path)
+    assert not any(key.startswith("bb.") for key in trained)
+    cfg = OmegaConf.create({"model": {"weight": str(base), "channels": [32, 16, 8, 4], "classes": 4}})
     loaded = load_model(cfg, str(path), torch.device("cpu"))
     assert loaded.training is False
     assert loaded.loaded_meta["preprocess"] == {"size": 1024}
-    assert "teacher" not in loaded.loaded_meta
+    assert "optimizer" not in loaded.loaded_meta
     for key, value in loaded.state_dict().items():
         assert torch.equal(value, tiny_model.state_dict()[key])
 
 
-def test_checkpointed_partial_layer_receives_gradient_with_frozen_input():
-    layer = BasicLayer(
-        dim=12, depth=1, num_heads=2, window_size=4, mlp_ratio=2.0,
-        drop_path=0.0, downsample=None, use_checkpoint=True,
-    )
-    out, *_ = layer(torch.randn(1, 64, 12), 8, 8)
-    out.square().mean().backward()
-    assert all(param.grad is not None for param in layer.parameters())
+def test_trained_checkpoint_must_match_the_trained_part(tiny_model):
+    from src.model.checkpoint import load_trained, trained_state
+
+    state = trained_state(tiny_model.state_dict())
+    load_trained(tiny_model, state)
+    with pytest.raises(RuntimeError, match="trained part"):
+        load_trained(tiny_model, {key: value for key, value in state.items() if key != "decoder.conv_out1.0.bias"})
+    with pytest.raises(RuntimeError, match="trained part"):
+        load_trained(tiny_model, {**state, "unknown.weight": torch.zeros(1)})

@@ -1,6 +1,4 @@
-import contextlib
 from collections.abc import Sequence
-from typing import Literal
 
 import numpy as np
 import torch
@@ -9,14 +7,6 @@ from ..prepare.fit import Fit, fit_tensor, restore
 from ..precision import autocast, autocast_dtype
 from .tile import plan, weigh
 
-OutputMode = Literal["labels", "probability"]
-
-
-def _autocast(device: torch.device):
-    if device.type != "cuda":
-        return contextlib.nullcontext()
-    return autocast(device, dtype=autocast_dtype(device))
-
 
 def _infer(
     model: torch.nn.Module,
@@ -24,7 +14,7 @@ def _infer(
     device: torch.device,
 ) -> np.ndarray:
     batch = torch.from_numpy(np.stack(tensors)).to(device)
-    with _autocast(device):
+    with autocast(device, dtype=autocast_dtype(device), enabled=device.type == "cuda"):
         logits = model(batch).logits[-1]
     if logits.ndim != 4 or logits.shape[1] != model.num_classes:
         raise RuntimeError("Model logits must have shape N,num_classes,H,W")
@@ -135,36 +125,3 @@ def probabilities(logits: np.ndarray) -> np.ndarray:
     probs = np.exp(logits - logits.max(axis=0, keepdims=True))
     probs /= probs.sum(axis=0, keepdims=True)
     return probs
-
-
-def predict(
-    model: torch.nn.Module,
-    image: np.ndarray,
-    *,
-    output_mode: OutputMode = "labels",
-    class_id: int | None = None,
-    size: int = 1024,
-    is_sem: bool = False,
-    tiles: Sequence[int] = (1,),
-    overlap: float = 1 / 3,
-    tile_batch: int = 2,
-) -> np.ndarray:
-    """Return class IDs, all float probabilities, or a selected uint8 probability."""
-    if output_mode not in {"labels", "probability"}:
-        raise ValueError(f"Unsupported output_mode: {output_mode!r}")
-    if class_id is not None:
-        if output_mode != "probability":
-            raise ValueError("class_id is only supported for probability output")
-        if (not isinstance(class_id, int) or isinstance(class_id, bool)
-                or not 0 <= class_id < model.num_classes):
-            raise ValueError("class_id must be in [0, num_classes)")
-    logits = predict_logits(
-        model, image, size=size, is_sem=is_sem, tiles=tiles,
-        overlap=overlap, tile_batch=tile_batch,
-    )
-    if output_mode == "labels":
-        return logits.argmax(axis=0).astype(np.uint8)
-    probs = probabilities(logits)
-    if class_id is None:
-        return probs
-    return np.rint(probs[class_id] * 255.0).astype(np.uint8)

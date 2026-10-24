@@ -5,6 +5,7 @@ from math import isfinite
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.func import functional_call
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -12,7 +13,6 @@ from tqdm import tqdm
 from ..prepare.spec import PreprocessSpec
 from ..precision import autocast, autocast_dtype
 from .checkpoint import CheckpointStore
-from .schedule import CosineSchedule
 from .ema import EMA
 from .validate import Validator
 
@@ -22,10 +22,10 @@ class Trainer:
         self,
         model: nn.Module,
         train_loader: DataLoader,
-        valid_loader: DataLoader,
+        valid_pairs: list[tuple[str, str]],
         criterion: nn.Module,
         optimizer: torch.optim.Optimizer,
-        scheduler: CosineSchedule,
+        scheduler: torch.optim.lr_scheduler.LRScheduler,
         save_dir: str,
         predictor: Callable[..., np.ndarray],
         max_grad_norm: float = 1.0,
@@ -33,6 +33,8 @@ class Trainer:
         ema_decay: float = 0.99,
         preprocess: PreprocessSpec | None = None,
         ignore_index: int = 255,
+        teacher_weight: float = 0.0,
+        teacher_start: int = 1,
     ) -> None:
         if not isfinite(max_grad_norm) or not max_grad_norm > 0:
             raise ValueError("max_grad_norm must be finite and positive")
@@ -42,6 +44,10 @@ class Trainer:
             or accum_steps < 1
         ):
             raise ValueError("accum_steps must be a positive integer")
+        if not 0.0 <= teacher_weight < 1.0:
+            raise ValueError("teacher_weight must be in [0, 1)")
+        if type(teacher_start) is not int or teacher_start < 1:
+            raise ValueError("teacher_start must be a positive integer")
 
         self.model = model
         self.train_loader = train_loader
@@ -52,6 +58,8 @@ class Trainer:
         self.save_dir = save_dir
         self.max_grad_norm = float(max_grad_norm)
         self.accum_steps = int(accum_steps)
+        self.teacher_weight = float(teacher_weight)
+        self.teacher_start = teacher_start
         self.trainable_params = tuple(model.list_trainable())
         if not self.trainable_params:
             raise RuntimeError("Trainer requires trainable model parameters")
@@ -68,11 +76,7 @@ class Trainer:
         preprocess = preprocess or PreprocessSpec()
         self.validator = Validator(
             model=model,
-            valid_loader=valid_loader,
-            criterion=criterion,
-            device=self.device,
-            amp_dtype=self.amp_dtype,
-            use_amp=self.use_amp,
+            pairs=valid_pairs,
             preprocess=preprocess,
             predictor=predictor,
             ignore_index=ignore_index,
@@ -113,21 +117,45 @@ class Trainer:
             self._train_iter = iter(self.train_loader)
             return next(self._train_iter)
 
+    def teacher_share(self) -> float:
+        """How much the EMA teacher's prediction counts in the targets.
+
+        Zero for the first `teacher_start` steps, while the average is still poor,
+        then a linear rise to `teacher_weight` over the same number of steps.
+        """
+        progress = (self.global_step - self.teacher_start) / self.teacher_start
+        return self.teacher_weight * min(1.0, max(0.0, progress))
+
+    @torch.no_grad()
+    def teach(self, inputs: torch.Tensor, prepared: tuple) -> torch.Tensor:
+        """Class probabilities from the EMA weights, reusing the frozen features."""
+        self.model.eval()
+        try:
+            out = functional_call(self.model, self.ema.params, (inputs, prepared), strict=False)
+        finally:
+            self.model.train()
+        return out.logits[-1].float().softmax(1)
+
     def step(self) -> tuple[dict[str, float], bool]:
         if not self.model.training:
             self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         accum: dict[str, float] = {}
+        share = self.teacher_share()
         for _ in range(self.accum_steps):
             batch = self.move(self.next_batch())
             with autocast(
                 self.device, dtype=self.amp_dtype, enabled=self.use_amp
             ):
                 inputs = batch["image"]
-                out = self.model(inputs)
+                prepared = self.model.prepare(inputs)
+                out = self.model(inputs, prepared)
+                teacher = self.teach(inputs, prepared) if share > 0 else None
                 loss_dict, loss = self.criterion(
                     out,
                     batch,
+                    teacher=teacher,
+                    teacher_weight=share,
                 )
             if not torch.isfinite(loss):
                 raise FloatingPointError(
@@ -163,14 +191,15 @@ class Trainer:
         if self._writer is None:
             raise RuntimeError("Validation logging requires an active writer")
 
-        valid_metrics = self.validator.validate()
-        valid_metrics.update(self.validator.validate_deploy())
-        for key, value in valid_metrics.items():
-            self._writer.add_scalar(f"valid/{key}", value, self.global_step)
-        score = valid_metrics["deploy_miou"]
-        if score > self.best_region:
-            self.best_region = score
-            self.checkpoints.save_best("miou", valid_metrics, self.global_step)
+        # Score the EMA weights, the same ones the teacher uses and best_miou.pth keeps.
+        with self.ema.applied():
+            valid_metrics = self.validator.validate()
+            for key, value in valid_metrics.items():
+                self._writer.add_scalar(f"valid/{key}", value, self.global_step)
+            score = valid_metrics["miou"]
+            if score > self.best_region:
+                self.best_region = score
+                self.checkpoints.save_best("miou", valid_metrics, self.global_step)
 
     def train(
         self,

@@ -29,7 +29,6 @@ def test_training_import_does_not_import_prediction_or_cli():
         "from src.train.trainer import Trainer\n"
         "assert not any(name.startswith('src.predict') for name in sys.modules)\n"
         "assert 'run_train' not in sys.modules\n"
-        "assert 'run_api' not in sys.modules\n"
         "assert 'src.run' not in sys.modules\n"
     )
     subprocess.run([sys.executable, "-c", code], cwd=root, check=True)
@@ -51,7 +50,7 @@ def test_model_checkpoint_import_does_not_depend_on_builders_or_training():
     code = (
         "import sys\n"
         "from src.model.checkpoint import read_checkpoint, pack_model\n"
-        "for prefix in ('src.build', 'src.train', 'src.predict', 'backend'):\n"
+        "for prefix in ('src.build', 'src.train', 'src.predict'):\n"
         "    assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules)\n"
         "assert 'src.model.net' not in sys.modules\n"
         "assert 'torchvision' not in sys.modules\n"

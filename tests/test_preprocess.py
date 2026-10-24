@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.prepare.convert import MEAN, STD, _enhance, convert, normalize
+from src.prepare.convert import MEAN, STD, convert, normalize
 from src.prepare.fit import fit_image, fit_mask, fit_tensor, plan, restore
 from src.prepare.spec import PreprocessSpec
 
@@ -76,11 +76,14 @@ def test_preprocess_spec_round_trip_and_legacy_default():
 def test_sem_channels():
     gray = np.arange(256, dtype=np.uint8).reshape(16, 16)
     features = convert(gray, True)
-    low, high = np.percentile(gray, (1, 99))
-    expected = np.rint(np.clip((gray.astype(float) - low) / (high - low), 0, 1) * 255)
-    np.testing.assert_array_equal(features[..., 0], gray)
-    np.testing.assert_array_equal(features[..., 1], expected)
-    np.testing.assert_array_equal(features[..., 2], _enhance(gray))
+    mean, std = gray.mean(), gray.std()
+    low, high = mean - 3 * std, mean + 3 * std
+    expected = np.rint((np.clip(gray, low, high) - low) / (high - low) * 255)
+    for channel in range(3):
+        np.testing.assert_array_equal(features[..., channel], expected)
+    # A linear brightness/contrast change leaves the SEM input unchanged.
+    shifted = np.clip(gray.astype(float) * 0.5 + 40, 0, 255).astype(np.uint8)
+    assert np.abs(convert(shifted, True).astype(int) - features.astype(int)).max() <= 2
     spec = PreprocessSpec(is_sem=True)
     assert PreprocessSpec.from_meta({"preprocess": spec.to_meta()}) == spec
 
@@ -101,15 +104,8 @@ def test_sem_flag_rejects_non_booleans(value):
         PreprocessSpec(is_sem=value)
 
 
-@pytest.mark.parametrize("mode, expected", [("rgb", False), ("sem_features", True)])
-def test_legacy_preprocess_metadata_maps_only_equivalent_inputs(mode, expected):
-    spec = PreprocessSpec.from_meta({"preprocess": {"size": 1024, "mode": mode}})
-    assert spec.is_sem is expected
-    assert spec.to_meta() == {"size": 1024, "is_sem": expected}
-
-
-@pytest.mark.parametrize("mode", ["gray_repeat", "gray_features"])
-def test_removed_preprocess_modes_fail_explicitly(mode):
+@pytest.mark.parametrize("mode", ["rgb", "sem_features"])
+def test_preprocess_metadata_needs_is_sem(mode):
     with pytest.raises(RuntimeError, match="preprocess"):
         PreprocessSpec.from_meta({"preprocess": {"size": 1024, "mode": mode}})
 

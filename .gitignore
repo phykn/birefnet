@@ -14,6 +14,8 @@ Thumbs.db
 .venv/
 
 # Training data and outputs
+data/train/
+data/test/
 local_data/
 weight/
 run/
@@ -25,3 +27,6 @@ CLAUDE.md
 
 # Git worktrees
 .worktrees/
+
+# Third-party sample images (web sources, not redistributable)
+samples/

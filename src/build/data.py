@@ -11,44 +11,41 @@ from ..data.split import Splits, make, restore
 from ..prepare.spec import PreprocessSpec
 
 
-def _loader(cfg: Any, dataset: MaskDataset, shuffle: bool) -> DataLoader:
+def _loader(cfg: Any, dataset: MaskDataset) -> DataLoader:
     workers = cfg.loader.num_workers
     if type(workers) is not int or workers < 0:
         raise ValueError("loader.num_workers must be a non-negative integer")
-    batch = cfg.loader.batch
-    if type(batch) is not int or batch < 1:
-        raise ValueError("loader.batch must be a positive integer")
-
-    persistent = cfg.loader.get("persistent_workers", workers > 0)
-    pin_memory = cfg.loader.get("pin_memory", torch.cuda.is_available())
-    for name, value in (("persistent_workers", persistent), ("pin_memory", pin_memory)):
-        if not isinstance(value, bool):
+    for name, default in (("batch_size", None), ("prefetch_factor", 2)):
+        value = cfg.loader.get(name, default)
+        if type(value) is not int or value < 1:
+            raise ValueError(f"loader.{name} must be a positive integer")
+    for name in ("persistent_workers", "pin_memory", "drop_last"):
+        if not isinstance(cfg.loader.get(name, True), bool):
             raise ValueError(f"loader.{name} must be a bool")
-    if workers == 0 and persistent:
-        raise ValueError("persistent_workers requires num_workers > 0")
+    batch = cfg.loader.batch_size
 
     options: dict[str, Any] = {
         "dataset": dataset,
         "batch_size": batch,
-        "shuffle": shuffle,
+        "shuffle": True,
+        "drop_last": cfg.loader.get("drop_last", True),
         "num_workers": workers,
-        "pin_memory": pin_memory,
+        # Pinned memory only speeds up copies to CUDA; elsewhere it is unsupported.
+        "pin_memory": cfg.loader.get("pin_memory", True) and torch.cuda.is_available(),
     }
+    if options["drop_last"] and len(dataset) < batch:
+        raise ValueError("loader.drop_last would leave no training batch; lower loader.batch_size")
+    # Worker options mean nothing when the main process loads the data.
     if workers > 0:
-        prefetch = cfg.loader.get("prefetch_factor", 2)
-        if type(prefetch) is not int or prefetch < 1:
-            raise ValueError("loader.prefetch_factor must be a positive integer")
         options.update(
-            persistent_workers=persistent,
-            prefetch_factor=prefetch,
+            persistent_workers=cfg.loader.get("persistent_workers", True),
+            prefetch_factor=cfg.loader.get("prefetch_factor", 2),
         )
     return DataLoader(**options)
 
 
-def build(
-    cfg: Any,
-    splits: Splits | None = None,
-) -> tuple[DataLoader, DataLoader, Splits]:
+def build(cfg: Any, splits: Splits | None = None) -> tuple[DataLoader, Splits]:
+    """The training loader and the train/valid split; validation reads its pairs directly."""
     image_paths = glob(os.path.join(cfg.data.image_dir, "*"))
     mask_paths = glob(os.path.join(cfg.data.mask_dir, "*"))
     pairs = pair_files(image_paths, mask_paths)
@@ -63,31 +60,19 @@ def build(
         if splits is None
         else restore(pairs, splits)
     )
-    train_data = groups["train"]
-    valid_data = groups["valid"]
-    label_options = dict(num_classes=int(cfg.birefnet.num_classes),
-                         ignore_index=int(cfg.data.get("ignore_index", 255)))
-
-    train_dataset = MaskDataset(
-        pairs=train_data,
-        **label_options,
+    dataset = MaskDataset(
+        pairs=groups["train"],
+        num_classes=int(cfg.model.classes),
+        ignore_index=int(cfg.data.get("ignore_index", 255)),
         size=PreprocessSpec.size,
-        train=True,
-        is_sem=cfg.data.get("is_sem", False),
-        crop_prob=float(cfg.data.get("crop_prob", 0.7)),
-        min_crop_size=cfg.data.get("min_crop_size", 256),
+        is_sem=cfg.data.get("sem", False),
+        zoom=tuple(cfg.augment.get("zoom", (1.0, 1.0))),
         brightness=cfg.augment.brightness,
         contrast=cfg.augment.contrast,
-        masking_prob=float(cfg.augment.get("masking_prob", 0.0)),
+        gamma=tuple(cfg.augment.get("gamma", (1.0, 1.0))),
+        illumination=float(cfg.augment.get("light", 0.0)),
+        blur=float(cfg.augment.get("blur", 0.0)),
+        noise=float(cfg.augment.get("noise", 0.0)),
+        masking_prob=float(cfg.augment.get("hide_edges", 0.0)),
     )
-    valid_dataset = MaskDataset(
-        pairs=valid_data,
-        **label_options,
-        size=PreprocessSpec.size,
-        train=False,
-        is_sem=cfg.data.get("is_sem", False),
-    )
-
-    train_loader = _loader(cfg, train_dataset, shuffle=True)
-    valid_loader = _loader(cfg, valid_dataset, shuffle=False)
-    return train_loader, valid_loader, groups
+    return _loader(cfg, dataset), groups

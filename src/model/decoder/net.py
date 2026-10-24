@@ -35,6 +35,7 @@ class Decoder(nn.Module):
         self,
         channels: list[int],
         num_classes: int = 4,
+        depth: bool = False,
     ) -> None:
         super().__init__()
 
@@ -58,6 +59,22 @@ class Decoder(nn.Module):
         self.ipt_blk1 = ImageProjection(
             ipt_blk_in_channels[4], ipt_blk_out_channels[3], inter_channels=64
         )
+
+        # Depth enters next to the image patches at every level. The last conv of each
+        # branch starts at zero, so training begins exactly at the pretrained decoder
+        # and depth is used only as far as it helps.
+        self.dpt_blks = None
+        if depth:
+            self.dpt_blks = nn.ModuleList(
+                ImageProjection(in_channels // 3, out_channels, inter_channels=16)
+                for in_channels, out_channels in zip(
+                    ipt_blk_in_channels,
+                    [ipt_blk_out_channels[0], *ipt_blk_out_channels],
+                )
+            )
+            for block in self.dpt_blks:
+                nn.init.zeros_(block.conv_out.weight)
+                nn.init.zeros_(block.conv_out.bias)
 
         bb_neck_out_channels = channels.copy()
 
@@ -125,10 +142,6 @@ class Decoder(nn.Module):
         self.gdt_convs_attn_2 = nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1))
 
     def guidance(self, logits: torch.Tensor, gradient: torch.Tensor) -> torch.Tensor:
-        if self.num_classes == 1:
-            return gradient * F.interpolate(
-                logits, size=gradient.shape[2:], mode="bilinear", align_corners=True
-            )
         # All class interfaces contribute; background class 0 is not privileged.
         probs = logits.detach().softmax(dim=1)
         dx = F.pad((probs[..., 1:] - probs[..., :-1]).abs().sum(1, keepdim=True), (0, 1))
@@ -139,105 +152,54 @@ class Decoder(nn.Module):
         gradient = gradient / gradient.amax(dim=(2, 3), keepdim=True).clamp_min(1e-6)
         return (gradient * edge).detach()
 
+    def _project(
+        self, level: int, x: torch.Tensor, depth: torch.Tensor | None, feature: torch.Tensor
+    ) -> torch.Tensor:
+        """Image patches (plus depth, when built with it) concatenated onto a feature map."""
+        blocks = (self.ipt_blk5, self.ipt_blk4, self.ipt_blk3, self.ipt_blk2, self.ipt_blk1)
+        patches = blocks[level](x, feature)
+        if self.dpt_blks is not None:
+            if depth is None:
+                raise ValueError("This decoder was built with depth; pass a depth map")
+            patches = patches + self.dpt_blks[level](depth, feature)
+        return torch.cat((feature, patches), dim=1)
+
     def forward(
-        self, features: list[torch.Tensor] | tuple[torch.Tensor, ...]
+        self,
+        features: list[torch.Tensor] | tuple[torch.Tensor, ...],
+        depth: torch.Tensor | None = None,
     ) -> list[torch.Tensor] | tuple[list[list[torch.Tensor]], list[torch.Tensor]]:
+        """Eval returns the full-size logits; training also returns the side logits
+        before them and the gradient guidance (predictions, labels) per stage."""
         if self.training:
-            outs_gdt_pred = []
-            outs_gdt_label = []
-            x, x1, x2, x3, x4, gdt_gt = features
+            x, x1, x2, x3, x4, gradient = features
         else:
             x, x1, x2, x3, x4 = features
-
-        outs = []
-
-        x4 = torch.cat((x4, self.ipt_blk5(x, x4)), dim=1)
-
-        p4 = self.decoder_block4(x4)
-        m4 = self.conv_ms_spvn_4(p4) if self.training else None
-
-        p4_gdt = self.gdt_convs_4(p4)
-        if self.training:
-            gdt_label_main_4 = self.guidance(m4, gdt_gt)
-            outs_gdt_label.append(gdt_label_main_4)
-            gdt_pred_4 = self.gdt_convs_pred_4(p4_gdt)
-            outs_gdt_pred.append(gdt_pred_4)
-        gdt_attn_4 = self.gdt_convs_attn_4(p4_gdt).sigmoid()
-        p4 = p4 * gdt_attn_4
-
-        _p4 = F.interpolate(
-            p4,
-            size=x3.shape[2:],
-            mode="bilinear",
-            align_corners=True,
+        stages = (
+            (self.decoder_block4, self.conv_ms_spvn_4, self.gdt_convs_4,
+             self.gdt_convs_pred_4, self.gdt_convs_attn_4, self.lateral_block4, x3),
+            (self.decoder_block3, self.conv_ms_spvn_3, self.gdt_convs_3,
+             self.gdt_convs_pred_3, self.gdt_convs_attn_3, self.lateral_block3, x2),
+            (self.decoder_block2, self.conv_ms_spvn_2, self.gdt_convs_2,
+             self.gdt_convs_pred_2, self.gdt_convs_attn_2, self.lateral_block2, x1),
         )
-        _p3 = _p4 + self.lateral_block4(x3)
+        side, gdt_preds, gdt_labels = [], [], []
+        p = self._project(0, x, depth, x4)
+        for level, (block, head, gdt, gdt_pred, gdt_attn, lateral, skip) in enumerate(stages, 1):
+            p = block(p)
+            p_gdt = gdt(p)
+            if self.training:
+                logits = head(p)
+                side.append(logits)
+                gdt_labels.append(self.guidance(logits, gradient))
+                gdt_preds.append(gdt_pred(p_gdt))
+            p = p * gdt_attn(p_gdt).sigmoid()
+            p = F.interpolate(p, size=skip.shape[2:], mode="bilinear", align_corners=True)
+            p = self._project(level, x, depth, p + lateral(skip))
 
-        _p3 = torch.cat((_p3, self.ipt_blk4(x, _p3)), dim=1)
-
-        p3 = self.decoder_block3(_p3)
-        m3 = self.conv_ms_spvn_3(p3) if self.training else None
-
-        p3_gdt = self.gdt_convs_3(p3)
-        if self.training:
-            gdt_label_main_3 = self.guidance(m3, gdt_gt)
-            outs_gdt_label.append(gdt_label_main_3)
-            gdt_pred_3 = self.gdt_convs_pred_3(p3_gdt)
-            outs_gdt_pred.append(gdt_pred_3)
-        gdt_attn_3 = self.gdt_convs_attn_3(p3_gdt).sigmoid()
-        p3 = p3 * gdt_attn_3
-
-        _p3 = F.interpolate(
-            p3,
-            size=x2.shape[2:],
-            mode="bilinear",
-            align_corners=True,
-        )
-        _p2 = _p3 + self.lateral_block3(x2)
-
-        _p2 = torch.cat((_p2, self.ipt_blk3(x, _p2)), dim=1)
-
-        p2 = self.decoder_block2(_p2)
-        m2 = self.conv_ms_spvn_2(p2) if self.training else None
-
-        p2_gdt = self.gdt_convs_2(p2)
-        if self.training:
-            gdt_label_main_2 = self.guidance(m2, gdt_gt)
-            outs_gdt_label.append(gdt_label_main_2)
-            gdt_pred_2 = self.gdt_convs_pred_2(p2_gdt)
-            outs_gdt_pred.append(gdt_pred_2)
-        gdt_attn_2 = self.gdt_convs_attn_2(p2_gdt).sigmoid()
-        p2 = p2 * gdt_attn_2
-
-        _p2 = F.interpolate(
-            p2,
-            size=x1.shape[2:],
-            mode="bilinear",
-            align_corners=True,
-        )
-        _p1 = _p2 + self.lateral_block2(x1)
-
-        _p1 = torch.cat((_p1, self.ipt_blk2(x, _p1)), dim=1)
-
-        _p1 = self.decoder_block1(_p1)
-        _p1 = F.interpolate(
-            _p1,
-            size=x.shape[2:],
-            mode="bilinear",
-            align_corners=True,
-        )
-
-        _p1 = torch.cat((_p1, self.ipt_blk1(x, _p1)), dim=1)
-
-        p1_out = self.conv_out1(_p1)
-
-        if self.training:
-            outs.append(m4)
-            outs.append(m3)
-            outs.append(m2)
-        outs.append(p1_out)
-
+        p = self.decoder_block1(p)
+        p = F.interpolate(p, size=x.shape[2:], mode="bilinear", align_corners=True)
+        logits = [*side, self.conv_out1(self._project(4, x, depth, p))]
         if not self.training:
-            return outs
-
-        return [outs_gdt_pred, outs_gdt_label], outs
+            return logits
+        return [gdt_preds, gdt_labels], logits

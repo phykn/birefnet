@@ -24,10 +24,6 @@ class PreprocessSpec:
         try:
             if type(value["size"]) is not int or value["size"] != cls.size:
                 raise ValueError("Input size is fixed at 1024")
-            is_sem = (value["is_sem"] if "is_sem" in value else
-                      {"rgb": False, "sem_features": True}[value["mode"]])
-            return cls(
-                is_sem=is_sem,
-            )
+            return cls(is_sem=value["is_sem"])
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("Invalid checkpoint preprocess metadata") from exc

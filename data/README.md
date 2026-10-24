@@ -1,19 +1,34 @@
-# Synthetic sample data
+# NEU-Seg steel surface defects
 
-Four generated image/mask pairs for pipeline checks, **not real observations**.
-Each `image/sample_XX.png` (grayscale, 256x256) pairs with the same filename in
-`mask/` (PNG palette mode P). Pixel values remain integer class IDs:
+Hot-rolled steel strip images with three defect classes, from the
+[DHW-Master/NEU_Seg](https://github.com/DHW-Master/NEU_Seg) copy of NEU-Seg.
+The source repository states no license, so the image and mask folders are
+git-ignored; only this README is committed.
+
+```
+data/
+├── train/image/  3630 x 200x200 JPEG (grayscale content, RGB files)
+├── train/mask/   3630 palette PNGs
+├── test/image/    840 x 200x200 JPEG
+└── test/mask/     840 palette PNGs
+```
+
+Images and masks pair by filename stem (`000201.jpg` ↔ `000201.png`).
+`config.yaml` trains on `data/train/` and splits off `valid_ratio` for
+validation; `data/test/` is held out.
+
+Masks are palette (mode `P`) PNGs whose pixel values are class IDs:
 
 | ID | Meaning | Palette color |
 |---|---|---|
-| 0 | Background | Dark navy |
-| 1 | Filled shapes | Gray |
-| 2 | Branching lines | Coral red |
-| 3 | Interior holes | Cyan |
+| 0 | Background | Black |
+| 1 | Inclusion | White |
+| 2 | Patches | Blue |
+| 3 | Scratches | Red |
 
-These meanings describe the synthetic fixtures only. Define class IDs for your own dataset.
+Read masks with Pillow without RGB conversion to keep the class IDs.
+Background covers about 88% of training pixels.
 
-Use Pillow without RGB conversion to read label IDs. `preview.png` shows each
-image beside its colored mask. The deterministic generator is
-`scripts/make_sample_data.py`; it refuses to overwrite existing pairs.
-These samples verify loading/training mechanics only, not segmentation accuracy.
+To rebuild: clone the source repository, move `images/training`,
+`annotations/training`, `images/test` and `annotations/test` to the folders
+above, and save each mask as a palette PNG with the colors in the table.

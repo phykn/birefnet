@@ -1,6 +1,7 @@
 from argparse import Namespace
 
 import pytest
+import torch
 from omegaconf import OmegaConf
 
 import run_train
@@ -28,9 +29,9 @@ def _make_run(tmp_path):
 
 def test_default_run_combines_train_and_model_config():
     cfg, checkpoint, run_dir = load_run()
-    train = OmegaConf.load(ROOT / "config/train.yaml")
+    train = OmegaConf.load(ROOT / "config.yaml")
     assert cfg.train == train.train
-    assert cfg.birefnet == load_config().birefnet
+    assert cfg.model == load_config().model
     assert checkpoint is None
     assert run_dir is None
 
@@ -71,7 +72,7 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
     cfg = OmegaConf.create(
         {
             "marker": "saved",
-            "train": {"steps": 7, "val_freq": 2, "save_freq": 3},
+            "train": {"steps": 7, "val_every": 2, "save_every": 3},
         }
     )
     OmegaConf.save(cfg, run_dir / "config.yaml")
@@ -96,8 +97,7 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
         "parse_args",
         lambda: Namespace(resume=str(checkpoint), config=None),
     )
-    def build_model(actual, load_pretrained):
-        calls["load_pretrained"] = load_pretrained
+    def build_model(actual):
         return Base()
 
     monkeypatch.setattr(run, "build_model", build_model)
@@ -105,7 +105,7 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
     def build_data(actual, saved):
         calls["config"] = actual
         calls["splits"] = saved
-        return "train", "valid", splits
+        return "train", splits
 
     def build_trainer(**kwargs):
         calls["save_dir"] = kwargs["save_dir"]
@@ -119,7 +119,6 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
     run_train.main()
 
     assert calls["config"].marker == "saved"
-    assert calls["load_pretrained"] is False
     assert calls["splits"] == splits
     assert calls["save_dir"] == run_dir.resolve()
     assert calls["checkpoint"] == str(checkpoint.resolve())
@@ -131,7 +130,7 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
 def test_new_run_saves_config_and_splits_before_training(monkeypatch, tmp_path):
     from src.data.split import load as load_splits
 
-    cfg = load_config(ROOT / "config/train.yaml")
+    cfg = load_config()
     path = tmp_path / "custom.yaml"
     cfg.train.steps = 3
     OmegaConf.save(cfg, path)
@@ -155,14 +154,13 @@ def test_new_run_saves_config_and_splits_before_training(monkeypatch, tmp_path):
         def load_resume(self, path):
             raise AssertionError("New runs must not restore a training checkpoint")
 
-    def build_model(actual, load_pretrained):
+    def build_model(actual):
         assert actual == cfg
-        assert load_pretrained is True
         return Model()
 
     def build_data(actual, saved):
         assert saved is None
-        return "train", "valid", splits
+        return "train", splits
 
     def build_trainer(**kwargs):
         calls["save_dir"] = kwargs["save_dir"]
@@ -175,8 +173,8 @@ def test_new_run_saves_config_and_splits_before_training(monkeypatch, tmp_path):
     monkeypatch.setattr(run_train, "parse_args", lambda: Namespace(resume=None, config=path))
     run_train.main()
     assert calls["save_dir"].resolve().parent == tmp_path / "run"
-    assert calls["train"] == {"steps": 3, "val_freq": cfg.train.val_freq,
-                              "save_freq": cfg.train.save_freq}
+    assert calls["train"] == {"steps": 3, "val_freq": cfg.train.val_every,
+                              "save_freq": cfg.train.save_every}
 
 
 def test_missing_saved_split_fails_before_building_model(monkeypatch, tmp_path):
@@ -205,3 +203,23 @@ def test_dataset_mismatch_fails_before_building_model(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="dataset does not match"):
         run.train(checkpoint)
+
+
+def test_seed_repeats_the_split_and_random_draws():
+    import random
+
+    import numpy as np
+    from src.data.split import make
+
+    pairs = [(f"{index}.png", f"{index}_mask.png") for index in range(20)]
+    draws = []
+    for _ in range(2):
+        run.seed(7)
+        draws.append((make(pairs, 0.2), random.random(), np.random.random(), torch.rand(1).item()))
+    assert draws[0] == draws[1]
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, "0", True])
+def test_seed_must_be_a_non_negative_integer(value):
+    with pytest.raises(ValueError, match="train.seed"):
+        run.seed(value)

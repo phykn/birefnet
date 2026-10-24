@@ -1,4 +1,5 @@
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
@@ -43,6 +44,20 @@ class EMA:
                 avg.lerp_(param, 1.0 - self.decay)
             else:
                 avg.copy_(param)
+
+    @contextmanager
+    def applied(self) -> Iterator[None]:
+        """Run the source model with the averaged weights, then put the live ones back."""
+        with torch.no_grad():
+            live = {name: value.detach().clone() for name, value in self._current_params.items()}
+            for name, value in self._current_params.items():
+                value.copy_(self.params[name])
+        try:
+            yield
+        finally:
+            with torch.no_grad():
+                for name, value in self._current_params.items():
+                    value.copy_(live[name])
 
     def state_dict(self) -> dict[str, torch.Tensor]:
         return {name: value.detach().cpu().clone() for name, value in self.params.items()}

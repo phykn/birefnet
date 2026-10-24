@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from src.model.output import Output
-from src.train.loss import DiceLoss, SegmentationLoss
+from src.train.loss import DiceLoss, SegmentationLoss, soften
 from src.train.objective import TrainLoss
 
 
@@ -144,3 +144,54 @@ def test_gdt_ignores_nonfinite_predictions_and_labels_outside_valid_region():
     actual.backward()
     expected.backward()
     torch.testing.assert_close(dirty_pred.grad, pred.grad)
+
+
+def test_soft_labels_off_match_plain_cross_entropy():
+    torch.manual_seed(0)
+    pred = torch.randn(2, 4, 16, 16)
+    target = torch.randint(0, 4, (2, 16, 16))
+    parts = SegmentationLoss(num_classes=4).compute(pred, target, include_boundary=False)
+    torch.testing.assert_close(parts["cls_raw"], F.cross_entropy(pred, target))
+
+
+def test_label_blur_mixes_classes_only_near_edges():
+    onehot = torch.zeros(1, 2, 20, 20)
+    onehot[:, 0, :, :10] = 1
+    onehot[:, 1, :, 10:] = 1
+    soft = soften(onehot, torch.ones(1, 1, 20, 20), blur=1.0)
+    torch.testing.assert_close(soft.sum(1), torch.ones(1, 20, 20))
+    assert torch.all(soft[0, 0, :, :6] > 0.999) and torch.all(soft[0, 1, :, 14:] > 0.999)
+    assert 0.6 < soft[0, 0, 5, 9] < 0.9 and 0.6 < soft[0, 1, 5, 10] < 0.9
+
+
+def test_ignored_pixels_do_not_leak_into_soft_labels():
+    onehot = torch.zeros(1, 2, 20, 20)
+    onehot[:, 1] = 1
+    valid = torch.ones(1, 1, 20, 20)
+    valid[..., :10] = 0
+    soft = soften(onehot, valid, blur=2.0)
+    torch.testing.assert_close(soft[0, 1, :, 10:], torch.ones(20, 10))
+
+
+def test_teacher_pulls_targets_toward_its_prediction():
+    target = torch.zeros(1, 8, 8, dtype=torch.long)
+    pred = torch.zeros(1, 2, 4, 4)
+    pred[:, 1] = 5.0
+    loss = SegmentationLoss(num_classes=2)
+    plain = loss.compute(pred, target, include_boundary=False)["cls_raw"]
+    # The teacher agrees with the prediction, not the mask; a 1024-to-side-output
+    # resize is done by area averaging.
+    teacher = torch.zeros(1, 2, 8, 8)
+    teacher[:, 1] = 1.0
+    taught = loss.compute(pred, target, include_boundary=False,
+                          teacher=teacher, teacher_weight=0.3)["cls_raw"]
+    assert taught < plain
+    unchanged = loss.compute(pred, target, include_boundary=False,
+                             teacher=teacher, teacher_weight=0.0)["cls_raw"]
+    torch.testing.assert_close(unchanged, plain)
+
+
+@pytest.mark.parametrize("name, value", [("label_blur", -1.0), ("label_blur", 11.0)])
+def test_label_blur_is_checked(name, value):
+    with pytest.raises(ValueError, match=name):
+        SegmentationLoss(**{name: value})

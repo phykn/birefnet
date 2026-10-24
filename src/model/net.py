@@ -6,6 +6,7 @@ from kornia.filters import laplacian
 
 from .decoder.block import BasicDecBlk
 from .decoder.net import Decoder
+from .depth import Depth
 from .swin import build_large
 from .output import Output
 
@@ -14,34 +15,38 @@ class BiRefNet(nn.Module):
     def __init__(
         self,
         channels: list[int] = [1536, 768, 384, 192],
-        grad_checkpoint: bool = False,
         num_classes: int = 4,
+        depth: Depth | None = None,
     ) -> None:
         super().__init__()
 
-        if isinstance(num_classes, bool) or not isinstance(num_classes, int) or num_classes < 1:
-            raise ValueError("num_classes must be a positive integer")
+        if isinstance(num_classes, bool) or not isinstance(num_classes, int) or num_classes < 2:
+            raise ValueError("num_classes must be an integer >= 2")
         self.num_classes = num_classes
 
         channels = [channel * 2 for channel in channels]
 
         self.cxt = channels[1:][::-1][-3:]
 
-        self.bb = build_large(grad_checkpoint=grad_checkpoint)
+        self.bb = build_large()
 
         self.squeeze_module = nn.Sequential(
             BasicDecBlk(channels[0] + sum(self.cxt), channels[0])
         )
 
+        self.depth = depth
         self.decoder = Decoder(
             channels=channels,
             num_classes=num_classes,
+            depth=depth is not None,
         )
         self.configure_finetune()
 
     def configure_finetune(self) -> None:
-        for param in self.bb.parameters():
-            param.requires_grad_(False)
+        frozen = [self.bb] if self.depth is None else [self.bb, self.depth]
+        for module in frozen:
+            for param in module.parameters():
+                param.requires_grad_(False)
         for module in (self.squeeze_module, self.decoder):
             for param in module.parameters():
                 param.requires_grad_(True)
@@ -94,13 +99,21 @@ class BiRefNet(nn.Module):
 
         return (x1, x2, x3, x4)
 
-    def forward(self, x: torch.Tensor) -> Output:
-        x1, x2, x3, x4 = self.encode(x)
+    def prepare(self, x: torch.Tensor) -> tuple:
+        """The frozen part of a pass: backbone features and depth.
+
+        Training computes it once and shares it between the model and its EMA teacher.
+        """
+        depth = self.depth(x) if self.depth is not None else None
+        return self.encode(x), depth
+
+    def forward(self, x: torch.Tensor, prepared: tuple | None = None) -> Output:
+        (x1, x2, x3, x4), depth = prepared if prepared is not None else self.prepare(x)
         x4 = self.squeeze_module(x4)
         features = [x, x1, x2, x3, x4]
         if self.training:
             features.append(laplacian(x.mean(dim=1, keepdim=True), kernel_size=5))
-        result = self.decoder(features)
+        result = self.decoder(features, depth)
         if self.training:
             gdt, logits = result
             return Output(logits=logits, gdt=(gdt[0], gdt[1]))

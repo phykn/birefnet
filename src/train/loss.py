@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kornia.filters import gaussian_blur2d
+
 
 def masked_mean(value: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     return (value * valid).sum() / valid.sum().clamp_min(1.0)
@@ -40,6 +42,22 @@ def prepare_target(logits, target, valid=None, ignore_index=255):
     return target, valid, onehot
 
 
+def soften(onehot: torch.Tensor, valid: torch.Tensor, blur: float) -> torch.Tensor:
+    """Blur one-hot labels so classes mix only near their edges.
+
+    Masks drawn by hand, or resized with the image, are off by a pixel or two at
+    class edges. Ignored pixels do not leak in: the blur is renormalized by valid
+    pixels.
+    """
+    if blur <= 0:
+        return onehot
+    kernel = 2 * int(round(3 * blur)) + 1
+    size, sigma = (kernel, kernel), (blur, blur)
+    mass = gaussian_blur2d(valid, size, sigma, border_type="constant")
+    onehot = gaussian_blur2d(onehot * valid, size, sigma, border_type="constant")
+    return onehot / mass.clamp_min(1e-6)
+
+
 class DiceLoss(nn.Module):
     def __init__(self, eps=1e-6):
         super().__init__()
@@ -57,12 +75,16 @@ class DiceLoss(nn.Module):
 
 class SegmentationLoss(nn.Module):
     def __init__(self, lambda_cls=1.0, lambda_region=1.0, lambda_boundary=0.5,
-                 boundary_radius=3, num_classes=4, ignore_index=255):
+                 boundary_radius=3, num_classes=4, ignore_index=255,
+                 label_blur=0.0):
         super().__init__()
         if num_classes < 2 or 0 <= ignore_index < num_classes:
             raise ValueError("invalid class count or ignore index")
         if boundary_radius < 1:
             raise ValueError("boundary_radius must be >= 1")
+        if not 0.0 <= label_blur <= 10.0:
+            raise ValueError("label_blur must be in [0, 10] pixels")
+        self.label_blur = float(label_blur)
         self.num_classes = num_classes
         self.ignore_index = ignore_index
         self.region = DiceLoss()
@@ -71,17 +93,26 @@ class SegmentationLoss(nn.Module):
         self.lambda_region = lambda_region
         self.lambda_boundary = lambda_boundary
 
-    def compute(self, pred, target, valid=None, cut=None, include_boundary=True):
+    def compute(self, pred, target, valid=None, cut=None, include_boundary=True,
+                teacher=None, teacher_weight=0.0):
         # High-resolution reductions overflow float16 even when logits are finite.
         pred = pred.float()
         if pred.shape[1] != self.num_classes:
             raise ValueError(f"expected {self.num_classes} logit channels, got {pred.shape[1]}")
+        # Blur is in label pixels; coarser side outputs get a proportionally smaller one.
+        scale = pred.shape[-1] / target.shape[-1]
         target, valid, onehot = prepare_target(pred, target, valid, self.ignore_index)
+        soft = soften(onehot, valid, self.label_blur * scale)
+        if teacher is not None and teacher_weight > 0:
+            # Where the averaged model disagrees with the mask, the target leans its way.
+            if teacher.shape[-2:] != pred.shape[-2:]:
+                teacher = F.interpolate(teacher, pred.shape[-2:], mode="area")
+            soft = soft * (1.0 - teacher_weight) + teacher.detach().float() * teacher_weight
         # Mask before CE/softmax: multiplying an ignored NaN by zero is still NaN.
         pred = pred.masked_fill(valid == 0, 0)
-        ce = F.cross_entropy(pred, target, ignore_index=self.ignore_index, reduction="none")[:, None]
+        ce = -(soft * pred.log_softmax(1)).sum(1, keepdim=True)
         cls = masked_mean(ce, valid)
-        region = self.region(pred.softmax(1), onehot, valid)
+        region = self.region(pred.softmax(1), soft, valid)
         boundary = pred.sum() * 0.0
         if include_boundary:
             active = make_band(onehot, self.radius).amax(1, keepdim=True) * erode_valid(valid, self.radius)

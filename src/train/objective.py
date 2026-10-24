@@ -9,18 +9,21 @@ from .loss import SegmentationLoss, erode_valid, masked_mean
 class TrainLoss(nn.Module):
     def __init__(self, lambda_cls=1.0, lambda_region=1.0, lambda_boundary=0.5,
                  boundary_radius=3, lambda_aux=1.0,
-                 num_classes=4, ignore_index=255):
+                 num_classes=4, ignore_index=255,
+                 label_blur=0.0):
         super().__init__()
         self.seg = SegmentationLoss(lambda_cls, lambda_region, lambda_boundary,
-                                    boundary_radius, num_classes, ignore_index)
+                                    boundary_radius, num_classes, ignore_index,
+                                    label_blur)
         self.lambda_aux = lambda_aux
         self.ignore_index = ignore_index
 
-    def _segment(self, logits, target, valid, cut=None):
+    def _segment(self, logits, target, valid, cut=None, teacher=None, teacher_weight=0.0):
         totals = {}
         for index, pred in enumerate(logits):
             parts = self.seg.compute(pred, target, valid, cut,
-                                     include_boundary=index == len(logits) - 1)
+                                     include_boundary=index == len(logits) - 1,
+                                     teacher=teacher, teacher_weight=teacher_weight)
             for key, value in parts.items():
                 scale = 1.0 if key.startswith("boundary") else 1.0 / len(logits)
                 totals[key] = totals.get(key, value * 0.0) + value * scale
@@ -46,7 +49,7 @@ class TrainLoss(nn.Module):
             loss = loss + masked_mean(pixel_loss, mask)
         return loss / len(preds)
 
-    def forward(self, out: Output, batch):
+    def forward(self, out: Output, batch, teacher=None, teacher_weight=0.0):
         if not out.logits:
             raise ValueError("output must contain at least one segmentation logit")
         target = batch["mask"]
@@ -57,7 +60,8 @@ class TrainLoss(nn.Module):
         count = out.logits[-1].shape[0]
         if count != size:
             raise ValueError("output batch must match target batch")
-        parts = self._segment(out.logits, target, valid, cut=cut)
+        parts = self._segment(out.logits, target, valid, cut=cut,
+                              teacher=teacher, teacher_weight=teacher_weight)
         aux_raw = self._guide(out.gdt, valid) if out.gdt is not None and self.lambda_aux else parts["seg"] * 0.0
         aux = self.lambda_aux * aux_raw
         loss = parts["seg"] + aux

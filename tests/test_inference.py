@@ -6,13 +6,13 @@ import torch
 import torch.nn as nn
 
 from src.model.output import Output
-from src.predict.inference import predict, predict_logits
+from src.predict.inference import predict_logits, probabilities
 from src.predict.tile import Tile, plan, weigh
 
 
 @pytest.mark.parametrize("support", [(True, False), (False, True)])
 def test_autocast_uses_model_device_and_restores_current_device(monkeypatch, support):
-    from src.predict.inference import _autocast
+    from src.precision import autocast, autocast_dtype
 
     current = [0]
     queried = []
@@ -40,23 +40,12 @@ def test_autocast_uses_model_device_and_restores_current_device(monkeypatch, sup
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", supported)
     monkeypatch.setattr(torch.amp, "autocast", make_autocast)
 
-    dtype = _autocast(torch.device("cuda:1"))
+    target = torch.device("cuda:1")
+    dtype = autocast(target, dtype=autocast_dtype(target))
 
     assert dtype == (torch.bfloat16 if support[1] else torch.float16)
     assert queried == [1]
     assert current == [0]
-
-
-def test_cpu_autocast_does_not_query_cuda(monkeypatch):
-    from src.predict.inference import _autocast
-
-    def fail(*args, **kwargs):
-        raise AssertionError("CPU inference must not access CUDA")
-
-    monkeypatch.setattr(torch.cuda, "device", fail)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", fail)
-    with _autocast(torch.device("cpu")):
-        pass
 
 
 class _ConstantModel(nn.Module):
@@ -80,6 +69,15 @@ class _MeanModel(nn.Module):
         value = x.mean(dim=(1, 2, 3), keepdim=True) + self.anchor
         output = value.expand(x.shape[0], 4, x.shape[2], x.shape[3])
         return Output(logits=[output])
+
+
+def test_cpu_inference_does_not_query_cuda(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("CPU inference must not access CUDA")
+
+    monkeypatch.setattr(torch.cuda, "device", fail)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", fail)
+    predict_logits(_ConstantModel().eval(), np.zeros((8, 8, 3), np.uint8), size=16)
 
 
 def test_tile_planner_covers_image_and_aligns_last_tile():
@@ -234,27 +232,12 @@ def test_tiles_accept_any_positive_grid():
 def test_labels_and_softmax_preserve_all_classes():
     model = _ConstantModel(logit=1.25).eval()
     image = np.zeros((17, 43, 3), dtype=np.uint8)
-    labels = predict(model, image, size=32, tiles=[1, 3])
-    assert labels.shape == (17, 43)
-    assert labels.dtype == np.uint8
-    assert np.all(labels == 3)
-    probs = predict(model, image, size=32, tiles=[2], output_mode="probability")
-    assert probs.shape == (4, 17, 43)
+    logits = predict_logits(model, image, size=32, tiles=[1, 3])
+    assert logits.shape == (4, 17, 43)
+    assert np.all(logits.argmax(axis=0) == 3)
+    probs = probabilities(logits)
     np.testing.assert_allclose(probs.sum(axis=0), 1., atol=1e-6)
-    selected = predict(model, image, size=32, output_mode="probability", class_id=3)
-    np.testing.assert_array_equal(selected, np.rint(probs[3] * 255).astype(np.uint8))
-
-
-def test_rejects_binary_contract_and_invalid_class():
-    model = _ConstantModel().eval()
-    image = np.zeros((17, 43, 3), dtype=np.uint8)
-    with pytest.raises(TypeError):
-        predict(model, image, threshold=0.5)
-    with pytest.raises(ValueError, match="Unsupported"):
-        predict(model, image, output_mode="binary")
-    for class_id in (-1, 4, True):
-        with pytest.raises(ValueError, match="class_id"):
-            predict(model, image, output_mode="probability", class_id=class_id)
+    assert np.all(probs[3] > probs[0])
 
 
 class _SpatialModel(nn.Module):
@@ -298,3 +281,24 @@ def test_sem_inference_generates_features_from_each_input_patch(monkeypatch, gri
         patch = image[box.top:box.bottom, box.left:box.right]
         expected, _ = fit_tensor(patch, size=32, is_sem=True)
         np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_prediction_config_uses_saved_config_unless_explicit(tmp_path, explicit):
+    from omegaconf import OmegaConf
+    from src.predict.model import load_run_config
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    OmegaConf.save({"model": {"classes": 5}}, tmp_path / "config.yaml")
+    config = tmp_path / "custom.yaml"
+    OmegaConf.save({"model": {"classes": 6}}, config)
+    cfg = load_run_config(weights / "last.pth", config if explicit else None)
+    assert cfg.model.classes == (6 if explicit else 5)
+
+
+def test_prediction_config_falls_back_to_model_defaults(tmp_path):
+    from src.predict.model import load_run_config
+
+    cfg = load_run_config(tmp_path / "weights/last.pth")
+    assert cfg.model.classes == 4

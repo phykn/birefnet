@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from ..model.checkpoint import pack_model, read_checkpoint
+from ..model.checkpoint import load_trained, pack_model, read_checkpoint, trained_state
 from ..prepare.spec import PreprocessSpec
 
 
@@ -30,7 +30,7 @@ class CheckpointStore:
         atomic_torch_save(payload, root / "last.pth")
         averaged = dict(payload)
         averaged["model"] = dict(payload["model"])
-        averaged["model"].update(ema_state)
+        averaged["model"].update(trained_state(ema_state))
         atomic_torch_save(averaged, root / "last_ema.pth")
         payload.update(
             optimizer=self.optimizer.state_dict(),
@@ -52,25 +52,21 @@ class CheckpointStore:
 
     def load_resume(self, path: str) -> tuple[int, float]:
         state = read_checkpoint(path, self.model.num_classes)
-        if "optimizer" not in state:
-            raise RuntimeError("Unsupported training checkpoint format; LoRA overlays cannot be resumed")
+        if "optimizer" not in state or "ema" not in state:
+            raise RuntimeError("Unsupported training checkpoint format")
         if state.get("ignore_index", 255) != self.ignore_index:
             raise RuntimeError("Checkpoint ignore_index differs from configuration")
         if PreprocessSpec.from_meta(state) != self.preprocess:
             raise RuntimeError("Checkpoint preprocess differs from configuration")
-        if "ema" in state:
-            decay = float(state["ema_decay"])
-            if not 0.0 <= decay < 1.0:
-                raise RuntimeError("Checkpoint EMA decay must be in [0, 1)")
-        self.model.load_state_dict(state["model"], strict=True)
+        decay = float(state["ema_decay"])
+        if not 0.0 <= decay < 1.0:
+            raise RuntimeError("Checkpoint EMA decay must be in [0, 1)")
+        load_trained(self.model, state["model"])
         self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         self.scaler.load_state_dict(state["scaler"])
-        if "ema" in state:
-            self.ema.load_state_dict(state["ema"])
-            self.ema.decay = decay
-        else:
-            self.ema.load_state_dict({name: state["model"][name] for name in self.ema.params})
+        self.ema.load_state_dict(state["ema"])
+        self.ema.decay = decay
         return int(state["global_step"]), float(state["best_region"])
 
 

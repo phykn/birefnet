@@ -5,7 +5,6 @@ import cv2
 import numpy as np
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[1]
 COLORS = [(24, 32, 48), (174, 187, 199), (239, 89, 79), (64, 184, 220)]
 
 
@@ -39,12 +38,11 @@ def generate(index: int, size: int = 256) -> tuple[np.ndarray, np.ndarray]:
     return np.clip(image, 0, 255).astype(np.uint8), mask
 
 
-def main() -> None:
-    image_dir, mask_dir = ROOT / "data/image", ROOT / "data/mask"
+def write(root: Path) -> None:
+    image_dir, mask_dir = root / "image", root / "mask"
     image_dir.mkdir(parents=True, exist_ok=True)
     mask_dir.mkdir(parents=True, exist_ok=True)
     palette = [value for color in COLORS for value in color] + [0] * (768 - 12)
-    previews = []
     for index in range(4):
         name = f"sample_{index+1:02d}.png"
         paths = (image_dir / name, mask_dir / name)
@@ -56,10 +54,4 @@ def main() -> None:
         indexed.putpalette(palette)
         indexed.save(paths[1])
         assert set(np.unique(np.asarray(Image.open(paths[1])))) == {0, 1, 2, 3}
-        previews.append(np.concatenate([np.repeat(image[..., None], 3, -1), np.asarray(indexed.convert("RGB"))], axis=1))
-    Image.fromarray(np.concatenate(previews, axis=0)).save(ROOT / "data/preview.png")
-    print("Created four 256x256 synthetic image/palette-mask pairs in data/")
 
-
-if __name__ == "__main__":
-    main()

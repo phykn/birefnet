@@ -41,25 +41,13 @@ def _zscore(gray: np.ndarray, std_range: float = 3.0) -> np.ndarray:
     return np.rint(x * 255.0).astype(np.uint8)
 
 
-def _enhance(gray: np.ndarray) -> np.ndarray:
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    x = clahe.apply(_zscore(gray))
-    return clahe.apply(_zscore(x))
-
-
-def _percentile(gray: np.ndarray) -> np.ndarray:
-    low, high = np.percentile(gray, (1, 99))
-    if high <= low:
-        return np.zeros_like(gray)
-    x = (gray.astype(np.float32) - low) / (high - low)
-    return np.rint(np.clip(x, 0, 1) * 255).astype(np.uint8)
-
-
 def convert(image: np.ndarray, is_sem: bool = False) -> np.ndarray:
     if not isinstance(is_sem, bool):
         raise ValueError("is_sem must be a bool")
     rgb = _to_rgb(image)
     if not is_sem:
         return rgb
-    gray = to_gray(rgb)
-    return np.stack([gray, _percentile(gray), _enhance(gray)], axis=-1)
+    # One z-scored gray image in all three channels: the frozen backbone sees a
+    # plain grayscale photo, which kept its features steadiest across SEM
+    # brightness/contrast settings.
+    return np.repeat(_zscore(to_gray(rgb))[..., None], 3, axis=-1)

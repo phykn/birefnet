@@ -31,16 +31,11 @@ class ASPPDeformable(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        out_channels: int | None = None,
-        parallel_block_sizes: list[int] | tuple[int, ...] = (1, 3, 7),
+        parallel_block_sizes: tuple[int, ...] = (1, 3, 7),
     ) -> None:
         super().__init__()
-        self.down_scale = 1
-
-        if out_channels is None:
-            out_channels = in_channels
-
-        self.planes = 256 // self.down_scale
+        out_channels = in_channels
+        self.planes = 256
 
         self.aspp1 = _ASPPModuleDeformable(
             in_channels=in_channels,

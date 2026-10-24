@@ -1,7 +1,62 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torchvision.ops import deform_conv2d
+
+
+def _pair(value: int | tuple[int, int]) -> tuple[int, int]:
+    return value if isinstance(value, tuple) else (value, value)
+
+
+def grid_deform_conv2d(
+    input: torch.Tensor,
+    offset: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int | tuple[int, int] = 1,
+    padding: int | tuple[int, int] = 0,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """torchvision's modulated deform_conv2d built from grid_sample and einsum.
+
+    torchvision has no MPS backward for deform_conv2d, so Apple GPUs would run it on
+    the CPU. These ops all have MPS gradients. Covers one offset group, no dilation.
+    """
+    batch, channels, height, width = input.shape
+    out_channels, _, kernel_h, kernel_w = weight.shape
+    out_h, out_w = offset.shape[-2:]
+    taps = kernel_h * kernel_w
+    (stride_h, stride_w), (pad_h, pad_w) = _pair(stride), _pair(padding)
+    if offset.shape[1] != 2 * taps:
+        raise ValueError("Only one offset group is supported")
+
+    # Sampling positions in input pixels: output position * stride - padding, plus
+    # the kernel tap, plus the learned offset (dy, dx per tap, taps row-major).
+    offset = offset.view(batch, taps, 2, out_h, out_w)
+    rows = torch.arange(out_h, device=input.device, dtype=offset.dtype) * stride_h - pad_h
+    cols = torch.arange(out_w, device=input.device, dtype=offset.dtype) * stride_w - pad_w
+    tap_y, tap_x = torch.meshgrid(
+        torch.arange(kernel_h, device=input.device, dtype=offset.dtype),
+        torch.arange(kernel_w, device=input.device, dtype=offset.dtype),
+        indexing="ij",
+    )
+    y = rows.view(1, 1, -1, 1) + tap_y.reshape(1, taps, 1, 1) + offset[:, :, 0]
+    x = cols.view(1, 1, 1, -1) + tap_x.reshape(1, taps, 1, 1) + offset[:, :, 1]
+
+    # With align_corners=False, pixel p sits at (2p + 1) / size - 1, and zero padding
+    # matches torchvision's zero contribution from outside corners.
+    grid = torch.stack(((2 * x + 1) / width - 1, (2 * y + 1) / height - 1), dim=-1)
+    sampled = F.grid_sample(
+        input, grid.view(batch, taps * out_h, out_w, 2),
+        mode="bilinear", padding_mode="zeros", align_corners=False,
+    ).view(batch, channels, taps, out_h, out_w)
+    if mask is not None:
+        sampled = sampled * mask.view(batch, 1, taps, out_h, out_w)
+    out = torch.einsum("bckhw,ock->bohw", sampled, weight.view(out_channels, channels, taps))
+    if bias is not None:
+        out = out + bias.view(1, -1, 1, 1)
+    return out
 
 
 class DeformableConv2d(nn.Module):
@@ -9,21 +64,15 @@ class DeformableConv2d(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int | tuple[int, int] = 3,
-        stride: int | tuple[int, int] = 1,
-        padding: int | tuple[int, int] = 1,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
         bias: bool = False,
     ) -> None:
         super().__init__()
 
-        assert isinstance(kernel_size, (tuple, int))
-
-        k_size = (
-            kernel_size
-            if isinstance(kernel_size, tuple)
-            else (kernel_size, kernel_size)
-        )
-        self.stride = stride if isinstance(stride, tuple) else (stride, stride)
+        k_size = _pair(kernel_size)
+        self.stride = _pair(stride)
         self.padding = padding
 
         self.offset_conv = nn.Conv2d(
@@ -63,7 +112,8 @@ class DeformableConv2d(nn.Module):
         offset = self.offset_conv(x)
         modulator = 2.0 * torch.sigmoid(self.modulator_conv(x))
 
-        return deform_conv2d(
+        deform = grid_deform_conv2d if x.device.type == "mps" else deform_conv2d
+        return deform(
             input=x,
             offset=offset,
             weight=self.regular_conv.weight,

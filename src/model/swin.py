@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as checkpoint
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 
 
@@ -268,13 +267,11 @@ class BasicLayer(nn.Module):
         drop_path: float | list[float] = 0.0,
         norm_layer: nn.Module = nn.LayerNorm,
         downsample: nn.Module | None = None,
-        use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
         self.window_size = window_size
         self.shift_size = window_size // 2
         self.depth = depth
-        self.use_checkpoint = use_checkpoint
 
         self.blocks = nn.ModuleList(
             [
@@ -338,12 +335,7 @@ class BasicLayer(nn.Module):
         )
 
         for blk in self.blocks:
-            if self.use_checkpoint and torch.is_grad_enabled():
-                x = checkpoint.checkpoint(
-                    blk, x, attn_mask, height, width, use_reentrant=False
-                )
-            else:
-                x = blk(x, attn_mask, height, width)
+            x = blk(x, attn_mask, height, width)
         if self.downsample is not None:
             x_down = self.downsample(x, height, width)
             wh, ww = (height + 1) // 2, (width + 1) // 2
@@ -407,7 +399,6 @@ class SwinTransformer(nn.Module):
         norm_layer: nn.Module = nn.LayerNorm,
         patch_norm: bool = True,
         out_indices: tuple[int, ...] = (0, 1, 2, 3),
-        use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
 
@@ -442,7 +433,6 @@ class SwinTransformer(nn.Module):
                 drop_path=dpr[sum(depths[:i_layer]) : sum(depths[: i_layer + 1])],
                 norm_layer=norm_layer,
                 downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
-                use_checkpoint=use_checkpoint,
             )
             self.layers.append(layer)
 
@@ -479,11 +469,10 @@ class SwinTransformer(nn.Module):
         return tuple(outs)
 
 
-def build_large(grad_checkpoint: bool = False) -> SwinTransformer:
+def build_large() -> SwinTransformer:
     return SwinTransformer(
         embed_dim=192,
         depths=[2, 2, 18, 2],
         num_heads=[6, 12, 24, 48],
         window_size=12,
-        use_checkpoint=grad_checkpoint,
     )

@@ -1,128 +1,32 @@
 import math
 
 import torch
-from torch.optim.lr_scheduler import _LRScheduler
+from torch.optim.lr_scheduler import LambdaLR
 
 
-class CosineSchedule(_LRScheduler):
-    """Cosine annealing schedule with linear warmup and optional warm restarts.
+def cosine_schedule(
+    optimizer: torch.optim.Optimizer, steps: int, min_lr: float, warmup: int = 0
+) -> LambdaLR:
+    """Ramp each group's lr up from min_lr over `warmup` steps, then decay it
+    back to min_lr along a cosine that ends at `steps`."""
+    if type(steps) is not int or steps < 1:
+        raise ValueError("train.steps must be a positive integer")
+    if type(warmup) is not int or not 0 <= warmup < steps:
+        raise ValueError("train.warmup must be an integer in [0, train.steps)")
+    peaks = [group["lr"] for group in optimizer.param_groups]
+    for peak in peaks:
+        if not (math.isfinite(min_lr) and math.isfinite(peak) and 0 < peak and 0 <= min_lr <= peak):
+            raise ValueError("learning rates must be finite with 0 <= train.min_lr <= train.lr")
 
-    Args:
-        optimizer: Wrapped optimizer.
-        first_cycle_steps: Step size of the first cycle.
-        cycle_mult: Cycle length multiplier applied at each restart.
-            Shrinking cycles retain at least one step after warmup.
-        max_lr: Max learning rate of the first cycle.
-        min_lr: Minimum learning rate.
-        warmup_steps: Linear warmup step size (must be < first_cycle_steps).
-        gamma: Per-cycle decay factor applied to max_lr, bounded below by min_lr.
-        last_epoch: Index of the last epoch.
-    """
+    def factor(peak: float):
+        floor = min_lr / peak
 
-    def __init__(
-        self,
-        optimizer: torch.optim.Optimizer,
-        first_cycle_steps: int,
-        cycle_mult: float = 1.0,
-        max_lr: float | list[float] = 0.1,
-        min_lr: float | list[float] = 0.001,
-        warmup_steps: int = 0,
-        gamma: float = 1.0,
-        last_epoch: int = -1,
-    ):
-        if type(first_cycle_steps) is not int or first_cycle_steps <= 0:
-            raise ValueError("first_cycle_steps must be a positive integer")
-        if type(warmup_steps) is not int or warmup_steps < 0:
-            raise ValueError("warmup_steps must be a non-negative integer")
-        if warmup_steps >= first_cycle_steps:
-            raise ValueError("warmup_steps must be less than first_cycle_steps")
-        if not math.isfinite(cycle_mult) or cycle_mult <= 0:
-            raise ValueError("cycle_mult must be finite and positive")
-        if not math.isfinite(gamma) or gamma < 0:
-            raise ValueError("gamma must be finite and non-negative")
+        def at(step: int) -> float:
+            if step < warmup:
+                return floor + (1 - floor) * step / warmup
+            progress = min(1.0, (step - warmup) / (steps - warmup))
+            return floor + (1 - floor) * (1 + math.cos(math.pi * progress)) / 2
 
-        self.first_cycle_steps = first_cycle_steps
-        self.cycle_mult = cycle_mult
-        group_count = len(optimizer.param_groups)
-        self.base_max_lrs = self._group_values(optimizer, max_lr, "max_lr", group_count)
-        self.max_lrs = self.base_max_lrs.copy()
-        self.min_lrs = self._group_values(optimizer, min_lr, "min_lr", group_count)
-        for low, high in zip(self.min_lrs, self.max_lrs):
-            if not (math.isfinite(low) and math.isfinite(high) and 0 <= low <= high):
-                raise ValueError("learning rates must be finite and satisfy 0 <= min_lr <= max_lr")
-        self.warmup_steps = warmup_steps
-        self.gamma = gamma
+        return at
 
-        self.cur_cycle_steps = first_cycle_steps
-        self.cycle = 0
-        self.step_in_cycle = last_epoch
-
-        super().__init__(optimizer, last_epoch)
-
-        self.init_lr()
-
-    @staticmethod
-    def _group_values(
-        optimizer: torch.optim.Optimizer,
-        value: float | list[float],
-        group_key: str,
-        group_count: int,
-    ) -> list[float]:
-        if isinstance(value, list):
-            if len(value) != group_count:
-                raise ValueError(
-                    f"{group_key} must have {group_count} values, got {len(value)}"
-                )
-            defaults = [float(item) for item in value]
-        else:
-            defaults = [float(value)] * group_count
-        return [
-            float(group.get(group_key, default))
-            for group, default in zip(optimizer.param_groups, defaults)
-        ]
-
-    def init_lr(self):
-        self.base_lrs = self.min_lrs.copy()
-        self._last_lr = self.get_lr()
-        for param_group, lr in zip(self.optimizer.param_groups, self._last_lr):
-            param_group["lr"] = lr
-
-    def get_lr(self):
-        if self.step_in_cycle == -1:
-            return self.base_lrs
-        if self.step_in_cycle < self.warmup_steps:
-            return [
-                (max_lr - base_lr) * self.step_in_cycle / self.warmup_steps + base_lr
-                for base_lr, max_lr in zip(self.base_lrs, self.max_lrs)
-            ]
-        progress = (self.step_in_cycle - self.warmup_steps) / (
-            self.cur_cycle_steps - self.warmup_steps
-        )
-        return [
-            base_lr + (max_lr - base_lr) * (1 + math.cos(math.pi * progress)) / 2
-            for base_lr, max_lr in zip(self.base_lrs, self.max_lrs)
-        ]
-
-    def step(self, epoch=None):
-        if epoch is not None:
-            raise TypeError(
-                "CosineSchedule does not support epoch-resume; "
-                "call step() without arguments."
-            )
-        self.last_epoch += 1
-        self.step_in_cycle += 1
-        if self.step_in_cycle >= self.cur_cycle_steps:
-            self.cycle += 1
-            self.step_in_cycle -= self.cur_cycle_steps
-            self.cur_cycle_steps = (
-                max(1, int((self.cur_cycle_steps - self.warmup_steps) * self.cycle_mult))
-                + self.warmup_steps
-            )
-
-        self.max_lrs = [
-            max(min_lr, base_max_lr * (self.gamma**self.cycle))
-            for base_max_lr, min_lr in zip(self.base_max_lrs, self.min_lrs)
-        ]
-        self._last_lr = self.get_lr()
-        for param_group, lr in zip(self.optimizer.param_groups, self._last_lr):
-            param_group["lr"] = lr
+    return LambdaLR(optimizer, [factor(peak) for peak in peaks])

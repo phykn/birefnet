@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from ..model import BiRefNet
 from ..prepare.spec import PreprocessSpec
 from ..predict.inference import predict_logits
-from ..train.schedule import CosineSchedule
+from ..train.schedule import cosine_schedule
 from ..train.trainer import Trainer
 from .loss import build as build_loss
 
@@ -17,7 +17,7 @@ def build(
     cfg: Any,
     model: BiRefNet,
     train_loader: DataLoader,
-    valid_loader: DataLoader,
+    valid_pairs: list[tuple[str, str]],
     save_dir: str | os.PathLike[str],
 ) -> Trainer:
     criterion = build_loss(cfg)
@@ -30,30 +30,28 @@ def build(
         raise ValueError("train.weight_decay must be finite and non-negative")
     optimizer = torch.optim.AdamW(
         [{"name": "decoder", "params": params}],
-        lr=float(cfg.train.max_lr),
+        lr=float(cfg.train.lr),
         weight_decay=weight_decay,
     )
-    scheduler = CosineSchedule(
-        optimizer=optimizer,
-        first_cycle_steps=cfg.train.steps,
-        max_lr=cfg.train.max_lr,
-        min_lr=cfg.train.min_lr,
-        warmup_steps=cfg.train.warmup_steps,
+    scheduler = cosine_schedule(
+        optimizer, steps=cfg.train.steps, min_lr=float(cfg.train.min_lr), warmup=cfg.train.warmup
     )
     return Trainer(
         model=model,
         train_loader=train_loader,
-        valid_loader=valid_loader,
+        valid_pairs=valid_pairs,
         criterion=criterion,
         optimizer=optimizer,
         scheduler=scheduler,
         save_dir=os.fspath(save_dir),
         predictor=predict_logits,
-        max_grad_norm=cfg.train.max_grad_norm,
-        accum_steps=cfg.train.accum_steps,
-        ema_decay=cfg.train.get("ema_decay", 0.99),
+        max_grad_norm=cfg.train.grad_clip,
+        accum_steps=cfg.train.accum,
+        ema_decay=cfg.train.get("ema", 0.99),
         ignore_index=cfg.data.get("ignore_index", 255),
+        teacher_weight=float(cfg.loss.get("teacher", 0.0)),
+        teacher_start=cfg.loss.get("teacher_start", 1),
         preprocess=PreprocessSpec(
-            is_sem=cfg.data.get("is_sem", False),
+            is_sem=cfg.data.get("sem", False),
         ),
     )
