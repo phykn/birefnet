@@ -33,7 +33,9 @@ Download two pretrained models into `weight/`:
 
 Put training images in `data/train/image/` and masks in `data/train/mask/`;
 an image and its mask share a filename stem (`0001.jpg` ↔ `0001.png`), and a
-file without a partner stops training with an error. Masks
+file without a partner stops training with an error. Images deeper than 8 bits,
+such as 16-bit TIFFs, are stretched to 0–255 between their own darkest and
+brightest pixel. Masks
 are single-channel or palette images whose pixel values are class IDs `0` to
 `model.classes - 1`. RGB masks are rejected. The value `255` means "ignore":
 use it for pixels outside the region of interest, and no loss or metric counts

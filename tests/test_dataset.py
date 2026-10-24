@@ -28,6 +28,20 @@ def test_loader_uses_rgb_channel_order(tmp_path):
     assert read_image(str(image_path))[0, 0].tolist() == [255, 0, 0]
 
 
+@pytest.mark.parametrize("values, expected", [
+    ([0, 1000, 30000, 65535], [0, 4, 117, 255]),
+    ([100, 1050, 2100, 4100], [0, 61, 128, 255]),  # 12-bit data in a 16-bit file
+    ([500, 500, 500, 500], [0, 0, 0, 0]),
+])
+def test_16_bit_images_stretch_between_their_own_extremes(tmp_path, values, expected):
+    path = tmp_path / "deep.tif"
+    Image.fromarray(np.array([values], dtype=np.uint16)).save(path)
+    image = read_image(str(path))
+    assert image.dtype == np.uint8 and image.shape == (1, 4, 3)
+    assert image[..., 0].tolist() == [expected]
+    assert np.array_equal(image[..., 0], image[..., 2])
+
+
 @pytest.mark.parametrize("palette", [False, True])
 def test_class_indices_survive_palette_loading_and_letterbox(tmp_path, palette):
     image_path, mask_path, labels = _write_pair(tmp_path, palette)
