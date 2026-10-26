@@ -8,9 +8,9 @@ from torch.utils.data import DataLoader
 from ..model import BiRefNet
 from ..prepare.spec import PreprocessSpec
 from ..predict.inference import predict_logits
+from ..train.loss import TrainLoss
 from ..train.schedule import cosine_schedule
 from ..train.trainer import Trainer
-from .loss import build as build_loss
 
 
 def build(
@@ -20,8 +20,6 @@ def build(
     valid_pairs: list[tuple[str, str]],
     save_dir: str | os.PathLike[str],
 ) -> Trainer:
-    criterion = build_loss(cfg)
-
     params = model.list_trainable()
     if not params:
         raise RuntimeError("No trainable parameters were selected")
@@ -40,7 +38,16 @@ def build(
         model=model,
         train_loader=train_loader,
         valid_pairs=valid_pairs,
-        criterion=criterion,
+        criterion=TrainLoss(
+            lambda_cls=cfg.loss.ce,
+            lambda_region=cfg.loss.dice,
+            lambda_boundary=cfg.loss.boundary,
+            boundary_radius=cfg.loss.boundary_width,
+            lambda_aux=cfg.loss.aux,
+            num_classes=cfg.model.classes,
+            ignore_index=cfg.data.get("ignore_index", 255),
+            label_blur=float(cfg.loss.get("label_blur", 0.0)),
+        ),
         optimizer=optimizer,
         scheduler=scheduler,
         save_dir=os.fspath(save_dir),

@@ -22,7 +22,7 @@ def test_ema_averages_trainable_weights_and_float_buffers():
         model.weight.fill_(3)
         model.running.fill_(5)
         model.count.fill_(7)
-    ema.update(model)
+    ema.update()
     assert ema.params["weight"] == 2
     assert ema.params["running"] == 3
     assert ema.params["count"] == 7
@@ -35,13 +35,13 @@ def test_ema_resume_matches_uninterrupted_updates():
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
         model.weight.fill_(3)
-    ema.update(model)
+    ema.update()
     restored = EMA(model, decay=ema.decay)
     restored.load_state_dict(ema.state_dict())
     with torch.no_grad():
         model.weight.fill_(5)
-    ema.update(model)
-    restored.update(model)
+    ema.update()
+    restored.update()
     for name, value in ema.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[name], value)
 

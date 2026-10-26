@@ -3,8 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from src.model.output import Output
-from src.train.loss import DiceLoss, SegmentationLoss, soften
-from src.train.objective import TrainLoss
+from src.train.loss import DiceLoss, SegmentationLoss, TrainLoss, soften
 
 
 def test_ce_matches_torch_and_dice_perfect():

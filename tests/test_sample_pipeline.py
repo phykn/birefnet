@@ -76,7 +76,7 @@ def test_sample_palette_pairs_and_cpu_training_resume(tmp_path, tiny_model, monk
 
 def test_high_resolution_half_logits_have_finite_dice_gradient():
     from src.model.output import Output
-    from src.train.objective import TrainLoss
+    from src.train.loss import TrainLoss
     logits = torch.ones(1, 4, 256, 256, dtype=torch.float16, requires_grad=True)
     target = torch.zeros(1, 256, 256, dtype=torch.long)
     _, loss = TrainLoss()(Output(logits=[logits]), {"mask": target})

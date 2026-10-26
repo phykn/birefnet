@@ -14,7 +14,6 @@ class EMA:
         if not 0.0 <= decay < 1.0:
             raise ValueError("EMA decay must be in [0, 1)")
         self.decay = float(decay)
-        self._source_model = model
         self._current_params = {
             name: param
             for name, param in model.named_parameters()
@@ -32,14 +31,9 @@ class EMA:
             raise RuntimeError("EMA requires model state")
 
     @torch.no_grad()
-    def update(self, model: nn.Module) -> None:
-        current = (
-            self._current_params
-            if model is self._source_model
-            else {**dict(model.named_parameters()), **dict(model.named_buffers())}
-        )
+    def update(self) -> None:
         for name, avg in self.params.items():
-            param = current[name].detach().to(device=avg.device, dtype=avg.dtype)
+            param = self._current_params[name].detach().to(device=avg.device, dtype=avg.dtype)
             if avg.is_floating_point():
                 avg.lerp_(param, 1.0 - self.decay)
             else:

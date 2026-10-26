@@ -21,8 +21,8 @@ def main() -> None:
     rows = []
     for index in random.sample(range(len(dataset)), 2):
         sample = dataset[index]
-        gray = np.clip((sample["image"][0] * STD[0, 0, 0] + MEAN[0, 0, 0]) * 255, 0, 255).astype(np.uint8)
-        image = np.repeat(gray[..., None], 3, axis=-1)
+        pixels = sample["image"].transpose(1, 2, 0) * STD + MEAN
+        image = np.rint(np.clip(pixels, 0.0, 1.0) * 255).astype(np.uint8)
         colors = colorize(sample["mask"], cfg.model.classes, sample["valid"][0] > 0)
         rows.append([image, colors, overlay(image, colors)])
     figure(rows)

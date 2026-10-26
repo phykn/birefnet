@@ -24,7 +24,6 @@ class CheckpointStore:
 
     def save(self, global_step: int, best_region: float) -> None:
         root = Path(self.save_dir) / "weights"
-        root.mkdir(parents=True, exist_ok=True)
         payload = pack_model(self.model, self.preprocess, self.ignore_index)
         ema_state = self.ema.state_dict()
         atomic_torch_save(payload, root / "last.pth")
@@ -44,7 +43,6 @@ class CheckpointStore:
 
     def save_best(self, name: str, metrics: dict[str, float], global_step: int) -> None:
         root = Path(self.save_dir) / "weights"
-        root.mkdir(parents=True, exist_ok=True)
         payload = pack_model(self.model, self.preprocess, self.ignore_index)
         payload["selection"] = {"name": name, "global_step": global_step,
                                 "metrics": metrics}

@@ -8,7 +8,7 @@ opencv-python-headless
 pillow
 omegaconf
 tensorboard
-werkzeug>=3.1.9
+werkzeug>=3.1.9  # used by tensorboard; floor at the patched release
 tqdm
 transformers
 matplotlib

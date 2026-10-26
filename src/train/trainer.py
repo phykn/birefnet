@@ -170,9 +170,8 @@ class Trainer:
             self.trainable_params,
             self.max_grad_norm,
         )
-        if not torch.isfinite(torch.as_tensor(grad_norm)) and not (
-            self.use_amp and self.amp_dtype == torch.float16
-        ):
+        # With float16 the scaler skips such a step and lowers its scale instead.
+        if not torch.isfinite(grad_norm) and not self.scaler.is_enabled():
             raise FloatingPointError(
                 f"Non-finite gradient at training step {self.global_step + 1}"
             )
@@ -181,7 +180,7 @@ class Trainer:
         self.scaler.update()
         updated = self.scaler.get_scale() >= old_scale
         if updated:
-            self.ema.update(self.model)
+            self.ema.update()
             self.scheduler.step()
             self.global_step += 1
         accum["grad_norm"] = float(grad_norm)

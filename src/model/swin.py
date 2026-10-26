@@ -384,7 +384,6 @@ class PatchEmbed(nn.Module):
 class SwinTransformer(nn.Module):
     def __init__(
         self,
-        pretrain_img_size: int = 224,
         patch_size: int | tuple[int, int] = 4,
         in_channels: int = 3,
         embed_dim: int = 96,
@@ -402,17 +401,14 @@ class SwinTransformer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.pretrain_img_size = pretrain_img_size
         self.num_layers = len(depths)
-        self.embed_dim = embed_dim
-        self.patch_norm = patch_norm
         self.out_indices = out_indices
 
         self.patch_embed = PatchEmbed(
             patch_size=patch_size,
             in_channels=in_channels,
             embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None,
+            norm_layer=norm_layer if patch_norm else None,
         )
 
         self.pos_drop = nn.Dropout(p=drop_rate)

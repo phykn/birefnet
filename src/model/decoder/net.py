@@ -48,7 +48,6 @@ class Decoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.num_classes = num_classes
         self.grad_checkpoint = grad_checkpoint
 
         ipt_blk_in_channels = [3072, 768, 192, 48, 3]

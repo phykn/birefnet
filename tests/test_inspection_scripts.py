@@ -44,6 +44,31 @@ def test_dataset_cli_shows_random_pairs_from_config(monkeypatch, tmp_path):
     assert shown == [2 * 3]
 
 
+def test_augment_cli_shows_color_images_in_color(monkeypatch, tmp_path):
+    from omegaconf import OmegaConf
+    import matplotlib.pyplot as plt
+    from src.config import load_config
+
+    for folder in ("image", "mask"):
+        (tmp_path / folder).mkdir()
+    for index in range(4):
+        Image.new("RGB", (64, 64), (200, 40, 40)).save(tmp_path / f"image/{index}.png")
+        Image.new("L", (64, 64), 0).save(tmp_path / f"mask/{index}.png")
+    config = tmp_path / "train.yaml"
+    OmegaConf.save({"data": {"image_dir": str(tmp_path / "image"), "mask_dir": str(tmp_path / "mask"),
+                             "sem": False}}, config)
+    script = import_module("scripts.02_augment")
+    shown = []
+    monkeypatch.setattr(plt, "show", lambda: shown.extend(
+        axis.images[0].get_array() for axis in plt.gcf().axes[::3] if axis.images))
+    monkeypatch.setattr(script, "load_config", lambda: load_config(config))
+    script.main()
+    assert len(shown) == 2
+    for image in shown:
+        inside = image.sum(axis=-1) > 0
+        assert image[inside][:, 0].mean() > image[inside][:, 2].mean() + 50
+
+
 def test_prediction_returns_native_class_map_and_probability(tmp_path):
     image = tmp_path / "input.png"
     mask = tmp_path / "mask.png"

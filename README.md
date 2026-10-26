@@ -52,6 +52,12 @@ All settings live in [`config.yaml`](config.yaml). Each run writes to
 `run/<run-id>/`: its config, the train/valid split, TensorBoard logs, and
 `weights/best_miou.pth` (EMA weights with the best validation mIoU).
 
+GPU training runs in mixed precision. If memory runs short, set
+`train.grad_checkpoint: true`: the decoder recomputes its activations during
+backward, using about a quarter of the memory for roughly 20% more time per
+step. The freed memory can go to a larger `loader.batch_size` with a smaller
+`train.accum`.
+
 ## Predict
 
 ```bash
@@ -59,7 +65,7 @@ python scripts/03_predict.py --weight run/<run-id>/weights/best_miou.pth --image
 ```
 
 Add `--mask` to show the ground truth, `--tiles 1 3` for tiled prediction, or
-`--device cuda` for GPU. `scripts/01_dataset.py` and `scripts/02_argument.py`
+`--device cuda` for GPU. `scripts/01_dataset.py` and `scripts/02_augment.py`
 show raw and augmented training samples.
 
 ## Test
