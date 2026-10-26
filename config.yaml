@@ -40,6 +40,7 @@ train:
   grad_clip: 1.0
   accum: 4
   ema: 0.995
+  grad_checkpoint: false
 
 loss:
   ce: 1.0

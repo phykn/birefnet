@@ -48,6 +48,13 @@ def test_autocast_uses_model_device_and_restores_current_device(monkeypatch, sup
     assert current == [0]
 
 
+@pytest.mark.parametrize(("device", "expected"), [("cuda", True), ("mps", True), ("cpu", False)])
+def test_mixed_precision_runs_on_gpus_only(device, expected):
+    from src.precision import amp_enabled
+
+    assert amp_enabled(torch.device(device)) is expected
+
+
 class _ConstantModel(nn.Module):
     def __init__(self, logit: float = 0.0):
         super().__init__()

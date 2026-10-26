@@ -3,10 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from einops import rearrange
+from torch.utils.checkpoint import checkpoint
 
 from .block import BasicDecBlk, BasicLatBlk
 
 GDT_INTER_CHANNELS = 16
+
+
+def run_block(block: nn.Module, x: torch.Tensor, recompute: bool) -> torch.Tensor:
+    """Call a block, optionally dropping its activations and recomputing them in backward."""
+    if recompute and torch.is_grad_enabled():
+        return checkpoint(block, x, use_reentrant=False)
+    return block(x)
 
 
 class ImageProjection(nn.Module):
@@ -36,10 +44,12 @@ class Decoder(nn.Module):
         channels: list[int],
         num_classes: int = 4,
         depth: bool = False,
+        grad_checkpoint: bool = False,
     ) -> None:
         super().__init__()
 
         self.num_classes = num_classes
+        self.grad_checkpoint = grad_checkpoint
 
         ipt_blk_in_channels = [3072, 768, 192, 48, 3]
         ipt_blk_out_channels = [channels[i] // 8 for i in range(4)]
@@ -186,7 +196,7 @@ class Decoder(nn.Module):
         side, gdt_preds, gdt_labels = [], [], []
         p = self._project(0, x, depth, x4)
         for level, (block, head, gdt, gdt_pred, gdt_attn, lateral, skip) in enumerate(stages, 1):
-            p = block(p)
+            p = run_block(block, p, self.grad_checkpoint)
             p_gdt = gdt(p)
             if self.training:
                 logits = head(p)
@@ -197,7 +207,7 @@ class Decoder(nn.Module):
             p = F.interpolate(p, size=skip.shape[2:], mode="bilinear", align_corners=True)
             p = self._project(level, x, depth, p + lateral(skip))
 
-        p = self.decoder_block1(p)
+        p = run_block(self.decoder_block1, p, self.grad_checkpoint)
         p = F.interpolate(p, size=x.shape[2:], mode="bilinear", align_corners=True)
         logits = [*side, self.conv_out1(self._project(4, x, depth, p))]
         if not self.training:

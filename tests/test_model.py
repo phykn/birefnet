@@ -123,3 +123,35 @@ def test_trained_checkpoint_must_match_the_trained_part(tiny_model):
         load_trained(tiny_model, {key: value for key, value in state.items() if key != "decoder.conv_out1.0.bias"})
     with pytest.raises(RuntimeError, match="trained part"):
         load_trained(tiny_model, {**state, "unknown.weight": torch.zeros(1)})
+
+
+def test_grad_checkpoint_keeps_outputs_and_gradients(monkeypatch):
+    monkeypatch.setattr("src.model.net.build_large", lambda **kwargs: TinyBackbone())
+    torch.manual_seed(0)
+    plain = BiRefNet(channels=[32, 16, 8, 4]).train()
+    recomputed = BiRefNet(channels=[32, 16, 8, 4], grad_checkpoint=True).train()
+    recomputed.load_state_dict(plain.state_dict())
+    x = torch.randn(1, 3, 64, 64)
+    grads = []
+    for model in (plain, recomputed):
+        # ASPP dropout: the recompute must replay the same mask as the first pass.
+        torch.manual_seed(1)
+        output = model(x)
+        sum(pred.square().mean() for pred in [*output.logits, *output.gdt[0]]).backward()
+        grads.append([param.grad for param in model.list_trainable()])
+    assert all(torch.allclose(a, b, atol=1e-6) for a, b in zip(*grads))
+
+
+@pytest.mark.parametrize("value", [True, False, "yes"])
+def test_grad_checkpoint_switch_comes_from_train_config(monkeypatch, value):
+    from omegaconf import OmegaConf
+    from src.build.model import build
+
+    monkeypatch.setattr("src.model.net.build_large", lambda **kwargs: TinyBackbone())
+    cfg = OmegaConf.create({"model": {"channels": [32, 16, 8, 4], "classes": 4},
+                            "train": {"grad_checkpoint": value}})
+    if isinstance(value, bool):
+        assert build(cfg, load_pretrained=False).decoder.grad_checkpoint is value
+    else:
+        with pytest.raises(ValueError, match="train.grad_checkpoint must be a bool"):
+            build(cfg, load_pretrained=False)

@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from ..prepare.spec import PreprocessSpec
-from ..precision import autocast, autocast_dtype
+from ..precision import amp_enabled, autocast, autocast_dtype
 from .checkpoint import CheckpointStore
 from .ema import EMA
 from .validate import Validator
@@ -68,7 +68,7 @@ class Trainer:
         self.global_step = 0
         self.best_region = float("-inf")
 
-        self.use_amp = self.device.type == "cuda"
+        self.use_amp = amp_enabled(self.device)
         self.amp_dtype = autocast_dtype(self.device)
         self.scaler = torch.amp.GradScaler(
             self.device.type, enabled=self.use_amp and self.amp_dtype == torch.float16

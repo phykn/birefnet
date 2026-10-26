@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from kornia.filters import laplacian
 
 from .decoder.block import BasicDecBlk
-from .decoder.net import Decoder
+from .decoder.net import Decoder, run_block
 from .depth import Depth
 from .swin import build_large
 from .output import Output
@@ -17,6 +17,7 @@ class BiRefNet(nn.Module):
         channels: list[int] = [1536, 768, 384, 192],
         num_classes: int = 4,
         depth: Depth | None = None,
+        grad_checkpoint: bool = False,
     ) -> None:
         super().__init__()
 
@@ -39,6 +40,7 @@ class BiRefNet(nn.Module):
             channels=channels,
             num_classes=num_classes,
             depth=depth is not None,
+            grad_checkpoint=grad_checkpoint,
         )
         self.configure_finetune()
 
@@ -109,7 +111,7 @@ class BiRefNet(nn.Module):
 
     def forward(self, x: torch.Tensor, prepared: tuple | None = None) -> Output:
         (x1, x2, x3, x4), depth = prepared if prepared is not None else self.prepare(x)
-        x4 = self.squeeze_module(x4)
+        x4 = run_block(self.squeeze_module, x4, self.decoder.grad_checkpoint)
         features = [x, x1, x2, x3, x4]
         if self.training:
             features.append(laplacian(x.mean(dim=1, keepdim=True), kernel_size=5))

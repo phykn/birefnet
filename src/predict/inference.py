@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from ..prepare.fit import Fit, fit_tensor, restore
-from ..precision import autocast, autocast_dtype
+from ..precision import amp_enabled, autocast, autocast_dtype
 from .tile import plan, weigh
 
 
@@ -14,7 +14,7 @@ def _infer(
     device: torch.device,
 ) -> np.ndarray:
     batch = torch.from_numpy(np.stack(tensors)).to(device)
-    with autocast(device, dtype=autocast_dtype(device), enabled=device.type == "cuda"):
+    with autocast(device, dtype=autocast_dtype(device), enabled=amp_enabled(device)):
         logits = model(batch).logits[-1]
     if logits.ndim != 4 or logits.shape[1] != model.num_classes:
         raise RuntimeError("Model logits must have shape N,num_classes,H,W")
