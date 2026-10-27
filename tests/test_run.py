@@ -80,6 +80,8 @@ def test_main_resumes_in_existing_run(monkeypatch, tmp_path):
 
     class Base:
         stats = {"total": 10, "trainable": 2}
+        bb = torch.nn.Identity()
+
         def to(self, device):
             return self
 
@@ -140,6 +142,7 @@ def test_new_run_saves_config_and_splits_before_training(monkeypatch, tmp_path):
 
     class Model:
         stats = {"total": 10, "trainable": 2}
+        bb = torch.nn.Identity()
 
         def to(self, device):
             return self

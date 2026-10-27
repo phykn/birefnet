@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from torchvision.ops import deform_conv2d
 
+TAPS_PER_CHUNK = 7
+
 
 def _pair(value: int | tuple[int, int]) -> tuple[int, int]:
     return value if isinstance(value, tuple) else (value, value)
@@ -49,27 +51,33 @@ def grid_deform_conv2d(
     # matches torchvision's zero contribution from outside corners.
     grid = torch.stack(((2 * x + 1) / width - 1, (2 * y + 1) / height - 1), dim=-1)
     weight = weight.view(out_channels, channels, taps)
-    # One tap at a time, recomputing its samples in backward: sampling every tap at
-    # once holds taps x the input in memory, about 10 GB for a 7x7 kernel at 256 px.
+    # A few taps at a time, recomputing their samples in backward: sampling every tap
+    # at once holds taps x the input in memory, about 10 GB for a 7x7 kernel at
+    # 256 px, while one tap at a time is about 30% slower than seven.
     recompute = torch.is_grad_enabled()
     out = None
-    for tap in range(taps):
-        args = (input, grid[:, tap], None if mask is None else mask[:, tap : tap + 1], weight[:, :, tap])
-        part = checkpoint(_tap, *args, use_reentrant=False) if recompute else _tap(*args)
+    for start in range(0, taps, TAPS_PER_CHUNK):
+        chunk = slice(start, start + TAPS_PER_CHUNK)
+        args = (input, grid[:, chunk], None if mask is None else mask[:, chunk], weight[:, :, chunk])
+        part = checkpoint(_taps, *args, use_reentrant=False) if recompute else _taps(*args)
         out = part if out is None else out + part
     if bias is not None:
         out = out + bias.view(1, -1, 1, 1)
     return out
 
 
-def _tap(
+def _taps(
     input: torch.Tensor, grid: torch.Tensor, mask: torch.Tensor | None, weight: torch.Tensor
 ) -> torch.Tensor:
-    """One kernel tap: sample the input at its positions, then mix channels."""
-    sampled = F.grid_sample(input, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+    """Some kernel taps: sample the input at their positions, then mix channels."""
+    batch, taps, out_h, out_w = grid.shape[:4]
+    sampled = F.grid_sample(
+        input, grid.reshape(batch, taps * out_h, out_w, 2),
+        mode="bilinear", padding_mode="zeros", align_corners=False,
+    ).view(batch, input.shape[1], taps, out_h, out_w)
     if mask is not None:
-        sampled = sampled * mask
-    return torch.einsum("bchw,oc->bohw", sampled, weight)
+        sampled = sampled * mask[:, None]
+    return torch.einsum("bckhw,ock->bohw", sampled, weight)
 
 
 class DeformableConv2d(nn.Module):

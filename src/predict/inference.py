@@ -3,8 +3,8 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 
+from ..device import amp_enabled, autocast, autocast_dtype
 from ..prepare.fit import Fit, fit_tensor, restore
-from ..precision import amp_enabled, autocast, autocast_dtype
 from .tile import plan, weigh
 
 

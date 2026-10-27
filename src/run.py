@@ -13,6 +13,7 @@ from .build.trainer import build as build_trainer
 from .config import load_config, read_config
 from .data.split import load as load_splits
 from .data.split import save as save_splits
+from .device import pick_device
 
 
 def load_run(
@@ -61,15 +62,14 @@ def train(
     cfg, checkpoint, run_dir = load_run(resume, config)
     seed(OmegaConf.select(cfg, "train.seed", default=0))
     saved_splits = load_splits(run_dir) if run_dir is not None else None
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    device = pick_device()
 
     train_loader, splits = build_data(cfg, saved_splits)
     model = build_model(cfg).to(device)
+    if device.type == "mps":
+        # The frozen backbone runs about 40% faster compiled on Apple GPUs. Inductor's
+        # MPS backend fails on dynamic shapes, so each input size compiles on its own.
+        model.bb.compile(dynamic=False)
     target = run_dir if run_dir is not None else create_run_dir()
     trainer = build_trainer(
         cfg=cfg,

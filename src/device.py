@@ -3,6 +3,14 @@ from contextlib import nullcontext
 import torch
 
 
+def pick_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 def amp_enabled(device: torch.device) -> bool:
     # On Apple GPUs float16 runs several times faster than float32; bfloat16 does not.
     return device.type in ("cuda", "mps")

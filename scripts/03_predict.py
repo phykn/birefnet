@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts._draw import colorize, figure, overlay
 from src.data.image import read_image, read_mask
+from src.device import pick_device
 from src.predict.inference import predict_logits, probabilities
 from src.predict.model import load as load_model, load_run_config
 from src.prepare.spec import PreprocessSpec
@@ -48,12 +49,13 @@ def main() -> None:
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--mask", type=Path, help="Optional ground-truth mask for comparison")
     parser.add_argument("--config", type=Path, help="Defaults to the checkpoint's run config, then model defaults")
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", help="Defaults to CUDA, then Apple GPU, then CPU, whichever is present")
     parser.add_argument("--tiles", type=int, nargs="+", default=[1])
     parser.add_argument("--class-id", type=int, help="Also show this class's probability map")
     args = parser.parse_args()
     cfg = load_run_config(args.weight, args.config)
-    model = load_model(cfg, args.weight, torch.device(args.device))
+    device = torch.device(args.device) if args.device else pick_device()
+    model = load_model(cfg, args.weight, device)
     _, panels = run(model, args.image, args.tiles, args.mask, args.class_id)
     figure([panels])
     plt.show()

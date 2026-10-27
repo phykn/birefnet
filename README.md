@@ -64,9 +64,10 @@ step. The freed memory can go to a larger `loader.batch_size` with a smaller
 python scripts/03_predict.py --weight run/<run-id>/weights/best_miou.pth --image path/to/image.jpg
 ```
 
-Add `--mask` to show the ground truth, `--tiles 1 3` for tiled prediction, or
-`--device cuda` for GPU. `scripts/01_dataset.py` and `scripts/02_augment.py`
-show raw and augmented training samples.
+Add `--mask` to show the ground truth or `--tiles 1 3` for tiled prediction.
+Training and prediction run on CUDA if present, otherwise on an Apple GPU,
+otherwise on the CPU. `scripts/01_dataset.py` and `scripts/02_augment.py` show
+raw and augmented training samples.
 
 ## Test
 

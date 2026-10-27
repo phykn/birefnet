@@ -55,8 +55,10 @@ def test_augment_cli_shows_color_images_in_color(monkeypatch, tmp_path):
         Image.new("RGB", (64, 64), (200, 40, 40)).save(tmp_path / f"image/{index}.png")
         Image.new("L", (64, 64), 0).save(tmp_path / f"mask/{index}.png")
     config = tmp_path / "train.yaml"
+    # Hidden edges and zoom-out padding cover the image with gray, so both stay off.
     OmegaConf.save({"data": {"image_dir": str(tmp_path / "image"), "mask_dir": str(tmp_path / "mask"),
-                             "sem": False}}, config)
+                             "sem": False},
+                    "augment": {"hide_edges": 0.0, "zoom": [1.0, 1.0]}}, config)
     script = import_module("scripts.02_augment")
     shown = []
     monkeypatch.setattr(plt, "show", lambda: shown.extend(
@@ -65,8 +67,7 @@ def test_augment_cli_shows_color_images_in_color(monkeypatch, tmp_path):
     script.main()
     assert len(shown) == 2
     for image in shown:
-        inside = image.sum(axis=-1) > 0
-        assert image[inside][:, 0].mean() > image[inside][:, 2].mean() + 50
+        assert image[..., 0].mean() > image[..., 2].mean() + 50
 
 
 def test_prediction_returns_native_class_map_and_probability(tmp_path):

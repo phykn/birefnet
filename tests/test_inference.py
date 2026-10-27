@@ -12,7 +12,7 @@ from src.predict.tile import Tile, plan, weigh
 
 @pytest.mark.parametrize("support", [(True, False), (False, True)])
 def test_autocast_uses_model_device_and_restores_current_device(monkeypatch, support):
-    from src.precision import autocast, autocast_dtype
+    from src.device import autocast, autocast_dtype
 
     current = [0]
     queried = []
@@ -50,7 +50,7 @@ def test_autocast_uses_model_device_and_restores_current_device(monkeypatch, sup
 
 @pytest.mark.parametrize(("device", "expected"), [("cuda", True), ("mps", True), ("cpu", False)])
 def test_mixed_precision_runs_on_gpus_only(device, expected):
-    from src.precision import amp_enabled
+    from src.device import amp_enabled
 
     assert amp_enabled(torch.device(device)) is expected
 

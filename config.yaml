@@ -1,36 +1,36 @@
 model:
   weight: "weight/BiRefNet-general-epoch_244.pth"
-  depth: true
+  depth: true                   # feed Depth Anything depth into every decoder level
   depth_weight: "weight/Depth-Anything-V2-Small-hf"
   classes: 4
 
 data:
   image_dir: "data/train/image"
   mask_dir: "data/train/mask"
-  valid_ratio: 0.1
-  sem: true
+  valid_ratio: 0.1              # share of pairs held out for validation
+  sem: true                     # gray, contrast-normalized input; false keeps RGB as is
 
 augment:
-  zoom: [0.5, 2.0]
-  hide_edges: 0.3
-  brightness: 0.2
-  contrast: 0.4
+  zoom: [0.5, 2.0]              # magnification; above 1 crops in, below 1 shrinks and pads
+  hide_edges: 0.3               # chance of covering image borders with a flat bar, labels ignored
+  brightness: 0.2               # largest shift, as a share of the full range
+  contrast: 0.4                 # largest change, as a share
   gamma: [0.7, 1.5]
-  light: 0.2
-  blur: 1.0
-  noise: 0.05
+  light: 0.2                    # largest gain difference across the image (uneven light)
+  blur: 1.0                     # largest Gaussian sigma, in pixels
+  noise: 0.05                   # largest noise std, as a share of the full range
 
 loader:
   batch_size: 2
   num_workers: 4
   prefetch_factor: 2
   persistent_workers: true
-  pin_memory: true
+  pin_memory: true              # CUDA only
   drop_last: true
 
 train:
   seed: 0
-  steps: 5000
+  steps: 5000                   # optimizer steps; val_every, save_every and warmup count these
   val_every: 250
   save_every: 500
   lr: 1.0e-4
@@ -38,16 +38,16 @@ train:
   warmup: 200
   weight_decay: 0.01
   grad_clip: 1.0
-  accum: 4
-  ema: 0.995
-  grad_checkpoint: false
+  accum: 4                      # batches per optimizer step: effective batch = batch_size x accum
+  ema: 0.995                    # decay of the averaged weights used for validation and saving
+  grad_checkpoint: false        # recompute decoder activations: less memory, slower steps
 
 loss:
   ce: 1.0
   dice: 1.0
-  boundary: 0.5
-  boundary_width: 3
-  aux: 1.0
-  label_blur: 1.0
-  teacher: 0.3
-  teacher_start: 1000
+  boundary: 0.5                 # extra cross-entropy near class edges
+  boundary_width: 3             # in pixels
+  aux: 1.0                      # edge-guidance loss of the decoder side outputs
+  label_blur: 1.0               # sigma in pixels for softening mask edges
+  teacher: 0.3                  # final share of EMA-teacher predictions in the targets
+  teacher_start: 1000           # steps before the teacher joins; it then ramps up over as many

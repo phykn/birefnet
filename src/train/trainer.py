@@ -10,8 +10,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from ..device import amp_enabled, autocast, autocast_dtype
 from ..prepare.spec import PreprocessSpec
-from ..precision import amp_enabled, autocast, autocast_dtype
 from .checkpoint import CheckpointStore
 from .ema import EMA
 from .validate import Validator
