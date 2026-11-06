@@ -20,6 +20,10 @@ local_data/
 weight/
 run/
 
+# Local experiment configurations
+/experiments/*.yaml
+/experiments/*.yml
+
 # Local operational docs
 docs/
 .claude/

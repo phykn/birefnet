@@ -1,5 +1,0 @@
-loss:
-  label_blur: 1.0
-train:
-  steps: 3000
-  crop: 512

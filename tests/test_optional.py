@@ -26,25 +26,12 @@ def test_optional_config(key, value):
         parse({section: {field: value}})
 
 
-def test_defaults_and_experiments():
+def test_optional_features_are_off_by_default():
     cfg = load_config()
     assert cfg.train.crop == 512 and not cfg.model.depth
     assert all(
         getattr(cfg.loss, k) == 0 for k in ("boundary", "aux", "label_blur", "teacher")
     )
-    from pathlib import Path
-
-    for p in Path("experiments").glob("o3_*.yaml"):
-        c = load_config(p)
-        assert c.train.crop == 512 and c.train.steps == 3000
-        active = [
-            c.model.depth,
-            *(
-                getattr(c.loss, k) > 0
-                for k in ("boundary", "aux", "label_blur", "teacher")
-            ),
-        ]
-        assert sum(active) == 1
 
 
 def test_band_has_only_true_interfaces():

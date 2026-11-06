@@ -1,6 +1,0 @@
-loss:
-  teacher: 0.3
-  teacher_start: 1000
-train:
-  steps: 3000
-  crop: 512
