@@ -21,6 +21,7 @@ def zoom(
     image: np.ndarray,
     mask: np.ndarray,
     limits: tuple[float, float],
+    crop: int = 1024,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """Pick a square window as if the image were taken at another magnification.
 
@@ -30,7 +31,7 @@ def zoom(
     height, width = image.shape[:2]
     low, high = limits
     scale = float(np.exp(random.uniform(np.log(low), np.log(high))))
-    side = max(1, round(max(height, width) / scale))
+    side = max(1, round(max(height, width) / scale * crop / 1024))
     crop_h = min(side, height)
     crop_w = min(side, width)
     top = random.randint(0, height - crop_h)
@@ -115,7 +116,7 @@ def edge_mask(
     for _ in range(32):
         top, bottom = (random.randint(0, height // 4) for _ in range(2))
         left, right = (random.randint(0, width // 4) for _ in range(2))
-        region = np.s_[top:height - bottom, left:width - right]
+        region = np.s_[top : height - bottom, left : width - right]
         if np.count_nonzero(roi[region]) * 2 < count:
             continue
         hidden = np.ones(mask.shape, dtype=bool)

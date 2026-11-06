@@ -1,0 +1,5 @@
+model:
+  depth: true
+train:
+  steps: 3000
+  crop: 512

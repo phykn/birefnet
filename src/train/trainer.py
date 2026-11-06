@@ -1,8 +1,5 @@
 import os
-from collections.abc import Callable
-from math import isfinite
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.func import functional_call
@@ -11,10 +8,9 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from ..device import amp_enabled, autocast, autocast_dtype
-from ..prepare.spec import PreprocessSpec
 from .checkpoint import CheckpointStore
 from .ema import EMA
-from .validate import Validator
+from .metrics import evaluate
 
 
 class Trainer:
@@ -27,39 +23,19 @@ class Trainer:
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler.LRScheduler,
         save_dir: str,
-        predictor: Callable[..., np.ndarray],
-        max_grad_norm: float = 1.0,
-        accum_steps: int = 1,
-        ema_decay: float = 0.99,
-        preprocess: PreprocessSpec | None = None,
-        ignore_index: int = 255,
-        teacher_weight: float = 0.0,
-        teacher_start: int = 1,
+        cfg,
     ) -> None:
-        if not isfinite(max_grad_norm) or not max_grad_norm > 0:
-            raise ValueError("max_grad_norm must be finite and positive")
-        if (
-            not isinstance(accum_steps, int)
-            or isinstance(accum_steps, bool)
-            or accum_steps < 1
-        ):
-            raise ValueError("accum_steps must be a positive integer")
-        if not 0.0 <= teacher_weight < 1.0:
-            raise ValueError("teacher_weight must be in [0, 1)")
-        if type(teacher_start) is not int or teacher_start < 1:
-            raise ValueError("teacher_start must be a positive integer")
-
         self.model = model
         self.train_loader = train_loader
         self.criterion = criterion
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.ema = EMA(model, decay=ema_decay)
+        self.ema = EMA(model, decay=cfg.train.ema)
         self.save_dir = save_dir
-        self.max_grad_norm = float(max_grad_norm)
-        self.accum_steps = int(accum_steps)
-        self.teacher_weight = float(teacher_weight)
-        self.teacher_start = teacher_start
+        self.max_grad_norm = cfg.train.grad_clip
+        self.accum_steps = cfg.train.accum
+        self.teacher_weight = cfg.loss.teacher
+        self.teacher_start = cfg.loss.teacher_start
         self.trainable_params = tuple(model.list_trainable())
         if not self.trainable_params:
             raise RuntimeError("Trainer requires trainable model parameters")
@@ -73,23 +49,10 @@ class Trainer:
         self.scaler = torch.amp.GradScaler(
             self.device.type, enabled=self.use_amp and self.amp_dtype == torch.float16
         )
-        preprocess = preprocess or PreprocessSpec()
-        self.validator = Validator(
-            model=model,
-            pairs=valid_pairs,
-            preprocess=preprocess,
-            predictor=predictor,
-            ignore_index=ignore_index,
-        )
+        self.valid_pairs = valid_pairs
+        self.metrics = {}
         self.checkpoints = CheckpointStore(
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=self.scaler,
-            ema=self.ema,
-            save_dir=save_dir,
-            preprocess=preprocess,
-            ignore_index=ignore_index,
+            model, optimizer, scheduler, self.scaler, self.ema, save_dir, cfg
         )
         self._writer: SummaryWriter | None = None
         self._train_iter = None
@@ -102,7 +65,7 @@ class Trainer:
         }
 
     def save(self) -> None:
-        self.checkpoints.save(self.global_step, self.best_region)
+        self.checkpoints.save(self.global_step, self.best_region, self.metrics)
 
     def load_resume(self, path: str) -> None:
         self.global_step, self.best_region = self.checkpoints.load_resume(path)
@@ -118,22 +81,19 @@ class Trainer:
             return next(self._train_iter)
 
     def teacher_share(self) -> float:
-        """How much the EMA teacher's prediction counts in the targets.
-
-        Zero for the first `teacher_start` steps, while the average is still poor,
-        then a linear rise to `teacher_weight` over the same number of steps.
-        """
         progress = (self.global_step - self.teacher_start) / self.teacher_start
         return self.teacher_weight * min(1.0, max(0.0, progress))
 
     @torch.no_grad()
     def teach(self, inputs: torch.Tensor, prepared: tuple) -> torch.Tensor:
-        """Class probabilities from the EMA weights, reusing the frozen features."""
+        training = self.model.training
         self.model.eval()
         try:
-            out = functional_call(self.model, self.ema.params, (inputs, prepared), strict=False)
+            out = functional_call(
+                self.model, self.ema.params, (inputs, prepared), strict=False
+            )
         finally:
-            self.model.train()
+            self.model.train(training)
         return out.logits[-1].float().softmax(1)
 
     def step(self) -> tuple[dict[str, float], bool]:
@@ -144,19 +104,18 @@ class Trainer:
         share = self.teacher_share()
         for _ in range(self.accum_steps):
             batch = self.move(self.next_batch())
-            with autocast(
-                self.device, dtype=self.amp_dtype, enabled=self.use_amp
-            ):
+            with autocast(self.device, dtype=self.amp_dtype, enabled=self.use_amp):
                 inputs = batch["image"]
-                prepared = self.model.prepare(inputs)
-                out = self.model(inputs, prepared)
-                teacher = self.teach(inputs, prepared) if share > 0 else None
-                loss_dict, loss = self.criterion(
-                    out,
-                    batch,
-                    teacher=teacher,
-                    teacher_weight=share,
-                )
+                if share > 0:
+                    prepared = self.model.prepare(inputs)
+                    out = self.model(inputs, prepared)
+                    teacher = self.teach(inputs, prepared)
+                    loss_dict, loss = self.criterion(
+                        out, batch, teacher=teacher, teacher_weight=share
+                    )
+                else:
+                    out = self.model(inputs)
+                    loss_dict, loss = self.criterion(out, batch)
             if not torch.isfinite(loss):
                 raise FloatingPointError(
                     f"Non-finite loss at training step {self.global_step + 1}"
@@ -190,15 +149,16 @@ class Trainer:
         if self._writer is None:
             raise RuntimeError("Validation logging requires an active writer")
 
-        # Score the EMA weights, the same ones the teacher uses and best_miou.pth keeps.
+        # Validate and save the same EMA weights.
         with self.ema.applied():
-            valid_metrics = self.validator.validate()
+            valid_metrics = evaluate(self.model, self.valid_pairs)
+            self.metrics = valid_metrics
             for key, value in valid_metrics.items():
                 self._writer.add_scalar(f"valid/{key}", value, self.global_step)
             score = valid_metrics["miou"]
             if score > self.best_region:
                 self.best_region = score
-                self.checkpoints.save_best("miou", valid_metrics, self.global_step)
+                self.checkpoints.save_best(valid_metrics, self.global_step)
 
     def train(
         self,
@@ -206,7 +166,11 @@ class Trainer:
         val_freq: int = 500,
         save_freq: int = 1000,
     ) -> None:
-        for name, value in (("steps", steps), ("val_freq", val_freq), ("save_freq", save_freq)):
+        for name, value in (
+            ("steps", steps),
+            ("val_freq", val_freq),
+            ("save_freq", save_freq),
+        ):
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
 
@@ -238,9 +202,10 @@ class Trainer:
                 progress.update(1)
                 for key, value in losses.items():
                     writer.add_scalar(f"train/{key}", value, self.global_step)
-                for index, group in enumerate(self.optimizer.param_groups):
-                    name = group.get("name", str(index))
-                    writer.add_scalar(f"lr/{name}", group["lr"], self.global_step)
+                writer.add_scalar(
+                    "lr", self.optimizer.param_groups[0]["lr"], self.global_step
+                )
+                self.metrics = {}
 
                 if self.global_step % val_freq == 0:
                     self._evaluate()

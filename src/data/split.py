@@ -2,7 +2,7 @@ import csv
 import random
 from pathlib import Path
 
-from .pairs import Pair
+from .io import Pair
 
 NAMES = ("train", "valid")
 Splits = dict[str, list[Pair]]
@@ -34,22 +34,21 @@ def save(splits: Splits, run_dir: str | Path) -> None:
     root = Path(run_dir)
     for name in NAMES:
         pairs = splits[name]
-        with (root / f"{name}.csv").open(
-            "w", newline="", encoding="utf-8"
-        ) as file:
+        with (root / f"{name}.csv").open("w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow(["image", "mask"])
-            writer.writerows((Path(image).name, Path(mask).name)
-                             for image, mask in pairs)
+            writer.writerows(
+                (Path(image).name, Path(mask).name) for image, mask in pairs
+            )
 
 
-def make(pairs: list[Pair], valid_ratio: float) -> Splits:
+def make(pairs: list[Pair], valid_ratio: float, seed: int = 0) -> Splits:
     if not 0 < valid_ratio < 1:
         raise ValueError("valid_ratio must be between zero and one")
     if len(pairs) < 2:
         raise ValueError("At least two image/mask pairs are required")
     pairs = list(pairs)
-    random.shuffle(pairs)
+    random.Random(seed).shuffle(pairs)
     valid_n = min(len(pairs) - 1, max(1, round(len(pairs) * valid_ratio)))
     return {
         "valid": pairs[:valid_n],

@@ -1,15 +1,15 @@
 torch>=2.10.0
 torchvision
 timm
-kornia
 einops
 numpy
 opencv-python-headless
 pillow
-omegaconf
 tensorboard
 werkzeug>=3.1.9  # used by tensorboard; floor at the patched release
 tqdm
-transformers
 matplotlib
 pytest
+pyyaml
+kornia
+transformers

@@ -1,0 +1,5 @@
+loss:
+  aux: 1.0
+train:
+  steps: 3000
+  crop: 512

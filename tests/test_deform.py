@@ -2,10 +2,12 @@ import pytest
 import torch
 from torchvision.ops import deform_conv2d
 
-from src.model.decoder.deform import DeformableConv2d, grid_deform_conv2d
+from src.model.deform import DeformableConv2d, grid_deform_conv2d
 
 
-@pytest.mark.parametrize("kernel, padding, stride", [(3, 1, 1), (1, 0, 1), (3, 1, 2), (5, 2, 1)])
+@pytest.mark.parametrize(
+    "kernel, padding, stride", [(3, 1, 1), (1, 0, 1), (3, 1, 2), (5, 2, 1)]
+)
 def test_grid_deform_conv_matches_torchvision(kernel, padding, stride):
     torch.manual_seed(0)
     out_h = (9 + 2 * padding - kernel) // stride + 1
@@ -21,11 +23,17 @@ def test_grid_deform_conv_matches_torchvision(kernel, padding, stride):
     for value in inputs:
         value.requires_grad_(True)
     x, offset, weight, bias, mask = inputs
-    expected = deform_conv2d(x, offset, weight, bias, stride=stride, padding=padding, mask=mask)
-    actual = grid_deform_conv2d(x, offset, weight, bias, stride=stride, padding=padding, mask=mask)
+    expected = deform_conv2d(
+        x, offset, weight, bias, stride=stride, padding=padding, mask=mask
+    )
+    actual = grid_deform_conv2d(
+        x, offset, weight, bias, stride=stride, padding=padding, mask=mask
+    )
     torch.testing.assert_close(actual, expected)
-    for got, want in zip(torch.autograd.grad(actual.square().sum(), inputs),
-                         torch.autograd.grad(expected.square().sum(), inputs)):
+    for got, want in zip(
+        torch.autograd.grad(actual.square().sum(), inputs),
+        torch.autograd.grad(expected.square().sum(), inputs),
+    ):
         torch.testing.assert_close(got, want)
 
 

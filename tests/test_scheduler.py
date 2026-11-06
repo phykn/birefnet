@@ -61,13 +61,18 @@ def test_resume_continues_the_same_curve():
     assert restored.get_last_lr() == sched.get_last_lr() == [_lr(restored_opt)]
 
 
-@pytest.mark.parametrize(("warmup", "steps"), [(-1, 20), (20, 20), (0, 0), (0.5, 20), (0, 1.5)])
+@pytest.mark.parametrize(
+    ("warmup", "steps"), [(-1, 20), (20, 20), (0, 0), (0.5, 20), (0, 1.5)]
+)
 def test_rejects_invalid_lengths(warmup, steps):
     with pytest.raises(ValueError):
         _make(warmup=warmup, steps=steps)
 
 
-@pytest.mark.parametrize(("lr", "min_lr"), [(1.0, float("nan")), (float("inf"), 0.0), (1.0, -0.1), (0.1, 0.2), (0.0, 0.0)])
+@pytest.mark.parametrize(
+    ("lr", "min_lr"),
+    [(1.0, float("nan")), (float("inf"), 0.0), (1.0, -0.1), (0.1, 0.2), (0.0, 0.0)],
+)
 def test_rejects_invalid_learning_rates(lr, min_lr):
     with pytest.raises(ValueError, match="learning rates"):
         _make(lr=lr, min_lr=min_lr)

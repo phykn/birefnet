@@ -37,8 +37,12 @@ def grid_deform_conv2d(
     # Sampling positions in input pixels: output position * stride - padding, plus
     # the kernel tap, plus the learned offset (dy, dx per tap, taps row-major).
     offset = offset.view(batch, taps, 2, out_h, out_w)
-    rows = torch.arange(out_h, device=input.device, dtype=offset.dtype) * stride_h - pad_h
-    cols = torch.arange(out_w, device=input.device, dtype=offset.dtype) * stride_w - pad_w
+    rows = (
+        torch.arange(out_h, device=input.device, dtype=offset.dtype) * stride_h - pad_h
+    )
+    cols = (
+        torch.arange(out_w, device=input.device, dtype=offset.dtype) * stride_w - pad_w
+    )
     tap_y, tap_x = torch.meshgrid(
         torch.arange(kernel_h, device=input.device, dtype=offset.dtype),
         torch.arange(kernel_w, device=input.device, dtype=offset.dtype),
@@ -58,8 +62,15 @@ def grid_deform_conv2d(
     out = None
     for start in range(0, taps, TAPS_PER_CHUNK):
         chunk = slice(start, start + TAPS_PER_CHUNK)
-        args = (input, grid[:, chunk], None if mask is None else mask[:, chunk], weight[:, :, chunk])
-        part = checkpoint(_taps, *args, use_reentrant=False) if recompute else _taps(*args)
+        args = (
+            input,
+            grid[:, chunk],
+            None if mask is None else mask[:, chunk],
+            weight[:, :, chunk],
+        )
+        part = (
+            checkpoint(_taps, *args, use_reentrant=False) if recompute else _taps(*args)
+        )
         out = part if out is None else out + part
     if bias is not None:
         out = out + bias.view(1, -1, 1, 1)
@@ -67,13 +78,19 @@ def grid_deform_conv2d(
 
 
 def _taps(
-    input: torch.Tensor, grid: torch.Tensor, mask: torch.Tensor | None, weight: torch.Tensor
+    input: torch.Tensor,
+    grid: torch.Tensor,
+    mask: torch.Tensor | None,
+    weight: torch.Tensor,
 ) -> torch.Tensor:
     """Some kernel taps: sample the input at their positions, then mix channels."""
     batch, taps, out_h, out_w = grid.shape[:4]
     sampled = F.grid_sample(
-        input, grid.reshape(batch, taps * out_h, out_w, 2),
-        mode="bilinear", padding_mode="zeros", align_corners=False,
+        input,
+        grid.reshape(batch, taps * out_h, out_w, 2),
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=False,
     ).view(batch, input.shape[1], taps, out_h, out_w)
     if mask is not None:
         sampled = sampled * mask[:, None]

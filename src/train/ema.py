@@ -24,7 +24,9 @@ class EMA:
             (name, value) for name, value in model.named_buffers() if name in saved_keys
         )
         self.params = {
-            name: param.detach().float().clone() if param.is_floating_point() else param.detach().clone()
+            name: param.detach().float().clone()
+            if param.is_floating_point()
+            else param.detach().clone()
             for name, param in self._current_params.items()
         }
         if not self.params:
@@ -33,7 +35,11 @@ class EMA:
     @torch.no_grad()
     def update(self) -> None:
         for name, avg in self.params.items():
-            param = self._current_params[name].detach().to(device=avg.device, dtype=avg.dtype)
+            param = (
+                self._current_params[name]
+                .detach()
+                .to(device=avg.device, dtype=avg.dtype)
+            )
             if avg.is_floating_point():
                 avg.lerp_(param, 1.0 - self.decay)
             else:
@@ -43,7 +49,10 @@ class EMA:
     def applied(self) -> Iterator[None]:
         """Run the source model with the averaged weights, then put the live ones back."""
         with torch.no_grad():
-            live = {name: value.detach().clone() for name, value in self._current_params.items()}
+            live = {
+                name: value.detach().clone()
+                for name, value in self._current_params.items()
+            }
             for name, value in self._current_params.items():
                 value.copy_(self.params[name])
         try:
@@ -54,7 +63,9 @@ class EMA:
                     value.copy_(live[name])
 
     def state_dict(self) -> dict[str, torch.Tensor]:
-        return {name: value.detach().cpu().clone() for name, value in self.params.items()}
+        return {
+            name: value.detach().cpu().clone() for name, value in self.params.items()
+        }
 
     def load_state_dict(self, state: Mapping[str, torch.Tensor]) -> None:
         expected = set(self.params)

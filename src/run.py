@@ -2,101 +2,100 @@ import random
 import uuid
 from datetime import datetime
 from pathlib import Path
-
 import numpy as np
 import torch
-from omegaconf import DictConfig, OmegaConf
-
-from .build.data import build as build_data
-from .build.model import build as build_model
-from .build.trainer import build as build_trainer
-from .config import load_config, read_config
-from .data.split import load as load_splits
-from .data.split import save as save_splits
+from torch.utils.data import DataLoader
+from .config import ROOT, load_config, read_config, save_config, resolve
+from .data.io import pairs, read_pair
+from .data.dataset import MaskDataset
+from .data import split
 from .device import pick_device
+from .model.checkpoint import build
+from .train.loss import TrainLoss
+from .train.schedule import cosine_schedule
+from .train.trainer import Trainer
 
 
-def load_run(
-    resume: str | Path | None = None,
-    config: str | Path | None = None,
-) -> tuple[DictConfig, Path | None, Path | None]:
-    if resume is None:
-        return load_config(config), None, None
-    if config is not None:
-        raise ValueError("--config cannot override a resumed run's saved config")
-
-    checkpoint = Path(resume).expanduser().resolve()
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"Resume checkpoint not found: {checkpoint}")
-    if checkpoint.parent.name != "weights":
-        raise ValueError("Resume checkpoint must be inside a run weights directory")
-    run_dir = checkpoint.parent.parent
-    config_path = run_dir / "config.yaml"
-    if not config_path.is_file():
-        raise FileNotFoundError(f"Run config not found: {config_path}")
-    return read_config(config_path), checkpoint, run_dir
-
-
-def create_run_dir(root: str | Path = "run") -> Path:
-    parent = Path(root)
-    parent.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    target = parent / f"{stamp}_{uuid.uuid4().hex[:8]}"
-    target.mkdir(exist_ok=False)
-    return target
-
-
-def seed(value: int) -> None:
-    """Fix the split, augmentation and initialization so a run can be repeated."""
-    if type(value) is not int or value < 0:
-        raise ValueError("train.seed must be a non-negative integer")
+def seed(value):
     random.seed(value)
-    np.random.seed(value)
+    np.random.seed(value % 2**32)
     torch.manual_seed(value)
 
 
-def train(
-    resume: str | Path | None = None,
-    config: str | Path | None = None,
-) -> None:
-    cfg, checkpoint, run_dir = load_run(resume, config)
-    seed(OmegaConf.select(cfg, "train.seed", default=0))
-    saved_splits = load_splits(run_dir) if run_dir is not None else None
-    device = pick_device()
-
-    train_loader, splits = build_data(cfg, saved_splits)
-    model = build_model(cfg).to(device)
+def train(resume=None, config=None, runs=ROOT / "run", device=None):
+    target = None
+    if resume is not None:
+        if config is not None:
+            raise ValueError("--config cannot be combined with --resume")
+        resume = Path(resume).resolve()
+        if resume.parent.name != "weights":
+            raise ValueError("Resume must be inside run weights directory")
+        target = resume.parent.parent
+        cfg = read_config(target / "config.yaml")
+    else:
+        cfg = load_config(config)
+    seed(cfg.train.seed)
+    available = pairs(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir))
+    if len(available) < 2:
+        raise ValueError("At least two pairs required")
+    groups = (
+        split.restore(available, split.load(target))
+        if target
+        else split.make(available, cfg.data.valid_ratio, cfg.train.seed)
+    )
+    if len(groups["train"]) < cfg.loader.batch_size:
+        raise ValueError("loader.batch_size exceeds training pairs")
+    for pair in available:
+        read_pair(*pair, cfg.model.classes)
+    device = device or pick_device()
+    loader = DataLoader(
+        MaskDataset(groups["train"], cfg),
+        batch_size=cfg.loader.batch_size,
+        shuffle=True,
+        num_workers=cfg.loader.num_workers,
+        drop_last=True,
+        persistent_workers=cfg.loader.num_workers > 0,
+        pin_memory=device.type == "cuda",
+    )
+    model = build(cfg).to(device)
     if device.type == "mps":
-        # The frozen backbone runs about 40% faster compiled on Apple GPUs. Inductor's
-        # MPS backend fails on dynamic shapes, so each input size compiles on its own.
         model.bb.compile(dynamic=False)
-    target = run_dir if run_dir is not None else create_run_dir()
-    trainer = build_trainer(
-        cfg=cfg,
-        model=model,
-        train_loader=train_loader,
-        valid_pairs=splits["valid"],
-        save_dir=target,
+    optimizer = torch.optim.AdamW(
+        model.list_trainable(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay
     )
-    if checkpoint is not None:
-        trainer.load_resume(str(checkpoint))
-
-    n_train = len(splits["train"])
-    n_valid = len(splits["valid"])
-    total, trainable = model.stats["total"], model.stats["trainable"]
-    print(f"\n[Dataset] train={n_train}, valid={n_valid}")
+    scheduler = cosine_schedule(
+        optimizer, cfg.train.steps, cfg.train.min_lr, cfg.train.warmup
+    )
+    if target is None:
+        target = Path(runs) / (
+            datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
+        )
+        target.mkdir(parents=True)
+        save_config(cfg, target / "config.yaml")
+        split.save(groups, target)
+    trainer = Trainer(
+        model,
+        loader,
+        groups["valid"],
+        TrainLoss(
+            cfg.loss.ce,
+            cfg.loss.dice,
+            cfg.loss.boundary,
+            cfg.loss.boundary_width,
+            cfg.loss.aux,
+            cfg.model.classes,
+            label_blur=cfg.loss.label_blur,
+        ),
+        optimizer,
+        scheduler,
+        target,
+        cfg,
+    )
+    if resume is not None:
+        trainer.load_resume(resume)
     print(
-        f"[BiRefNet] total={total:,}  trainable={trainable:,}  "
-        f"ratio={trainable / total:.2%}"
+        f"train={len(groups['train'])}, valid={len(groups['valid'])}, trainable={model.stats['trainable'] / model.stats['total']:.2%}"
     )
-
-    if run_dir is None:
-        OmegaConf.save(cfg, target / "config.yaml")
-        save_splits(splits, target)
-
-    trainer.train(
-        steps=cfg.train.steps,
-        val_freq=cfg.train.val_every,
-        save_freq=cfg.train.save_every,
-    )
-    print(f"\nTraining finished. Weights saved to: {target}")
+    trainer.train(cfg.train.steps, cfg.train.val_every, cfg.train.save_every)
+    print(f"Training finished: {target}")
+    return target

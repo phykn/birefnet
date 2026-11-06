@@ -25,7 +25,11 @@ def autocast_dtype(device: torch.device) -> torch.dtype:
 
 
 def autocast(device: torch.device, dtype: torch.dtype, enabled: bool = True):
-    context = torch.cuda.device(device) if enabled and device.type == "cuda" else nullcontext()
+    context = (
+        torch.cuda.device(device)
+        if enabled and device.type == "cuda"
+        else nullcontext()
+    )
     # Autocast checks BF16 support while its context is constructed.
     with context:
         return torch.amp.autocast(device.type, dtype=dtype, enabled=enabled)

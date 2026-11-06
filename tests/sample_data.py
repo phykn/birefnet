@@ -1,4 +1,3 @@
-"""Generate four deterministic synthetic image/mask pairs for pipeline checks."""
 from pathlib import Path
 
 import cv2
@@ -22,11 +21,14 @@ def generate(index: int, size: int = 256) -> tuple[np.ndarray, np.ndarray]:
     mask[solid == 1] = 1
     for cx, cy in particles:
         crack = np.zeros_like(mask)
-        points = np.array([(cx-27, cy+8), (cx-9, cy-3), (cx+9, cy+6), (cx+27, cy-9)], np.int32)
+        points = np.array(
+            [(cx - 27, cy + 8), (cx - 9, cy - 3), (cx + 9, cy + 6), (cx + 27, cy - 9)],
+            np.int32,
+        )
         cv2.polylines(crack, [points], False, 1, 2 + index % 2)
-        cv2.line(crack, (cx-9, cy-3), (cx-7, cy-21), 1, 2)
+        cv2.line(crack, (cx - 9, cy - 3), (cx - 7, cy - 21), 1, 2)
         mask[(crack == 1) & (solid == 1)] = 2
-        cv2.ellipse(mask, (cx+8, cy+24), (8 + index, 6), 20, 0, 360, 3, -1)
+        cv2.ellipse(mask, (cx + 8, cy + 24), (8 + index, 6), 20, 0, 360, 3, -1)
     levels = np.array([32, 168, 39, 28], np.float32)
     image = levels[mask]
     texture = rng.normal(0, 8, mask.shape).astype(np.float32)
@@ -44,7 +46,7 @@ def write(root: Path) -> None:
     mask_dir.mkdir(parents=True, exist_ok=True)
     palette = [value for color in COLORS for value in color] + [0] * (768 - 12)
     for index in range(4):
-        name = f"sample_{index+1:02d}.png"
+        name = f"sample_{index + 1:02d}.png"
         paths = (image_dir / name, mask_dir / name)
         if any(path.exists() for path in paths):
             raise FileExistsError(f"Refusing to overwrite existing sample: {name}")
@@ -54,4 +56,3 @@ def write(root: Path) -> None:
         indexed.putpalette(palette)
         indexed.save(paths[1])
         assert set(np.unique(np.asarray(Image.open(paths[1])))) == {0, 1, 2, 3}
-

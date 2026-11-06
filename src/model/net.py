@@ -2,13 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kornia.filters import laplacian
 
-from .decoder.block import BasicDecBlk
-from .decoder.net import Decoder, run_block
-from .depth import Depth
+from .decoder import BasicDecBlk, Decoder
 from .swin import build_large
-from .output import Output
+from .depth import Depth
+from dataclasses import dataclass
+
+
+@dataclass
+class Output:
+    logits: list[torch.Tensor]
+    gdt: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None
 
 
 class BiRefNet(nn.Module):
@@ -17,11 +21,15 @@ class BiRefNet(nn.Module):
         channels: list[int] = [1536, 768, 384, 192],
         num_classes: int = 4,
         depth: Depth | None = None,
-        grad_checkpoint: bool = False,
+        auxiliary: bool = False,
     ) -> None:
         super().__init__()
 
-        if isinstance(num_classes, bool) or not isinstance(num_classes, int) or num_classes < 2:
+        if (
+            isinstance(num_classes, bool)
+            or not isinstance(num_classes, int)
+            or num_classes < 2
+        ):
             raise ValueError("num_classes must be an integer >= 2")
         self.num_classes = num_classes
 
@@ -36,11 +44,11 @@ class BiRefNet(nn.Module):
         )
 
         self.depth = depth
+        self.auxiliary = auxiliary
         self.decoder = Decoder(
             channels=channels,
             num_classes=num_classes,
             depth=depth is not None,
-            grad_checkpoint=grad_checkpoint,
         )
         self.configure_finetune()
 
@@ -57,7 +65,9 @@ class BiRefNet(nn.Module):
     @property
     def stats(self) -> dict[str, int]:
         total = sum(param.numel() for param in self.parameters())
-        trainable = sum(param.numel() for param in self.parameters() if param.requires_grad)
+        trainable = sum(
+            param.numel() for param in self.parameters() if param.requires_grad
+        )
         return {"total": total, "trainable": trainable, "frozen": total - trainable}
 
     def list_trainable(self) -> list[nn.Parameter]:
@@ -81,9 +91,18 @@ class BiRefNet(nn.Module):
         )
         pyramid = self.bb(x_pyramid)
         x1, x2, x3, x4 = [
-            torch.cat((feature, F.interpolate(
-                small, size=feature.shape[2:], mode="bilinear", align_corners=True
-            )), dim=1)
+            torch.cat(
+                (
+                    feature,
+                    F.interpolate(
+                        small,
+                        size=feature.shape[2:],
+                        mode="bilinear",
+                        align_corners=True,
+                    ),
+                ),
+                dim=1,
+            )
             for feature, small in zip(features, pyramid)
         ]
 
@@ -95,28 +114,23 @@ class BiRefNet(nn.Module):
                     mode="bilinear",
                     align_corners=True,
                 )
-                for feature in (x1, x2, x3)[-len(self.cxt):]
+                for feature in (x1, x2, x3)[-len(self.cxt) :]
             ]
             x4 = torch.cat((*context, x4), dim=1)
 
         return (x1, x2, x3, x4)
 
     def prepare(self, x: torch.Tensor) -> tuple:
-        """The frozen part of a pass: backbone features and depth.
-
-        Training computes it once and shares it between the model and its EMA teacher.
-        """
         depth = self.depth(x) if self.depth is not None else None
         return self.encode(x), depth
 
     def forward(self, x: torch.Tensor, prepared: tuple | None = None) -> Output:
         (x1, x2, x3, x4), depth = prepared if prepared is not None else self.prepare(x)
-        x4 = run_block(self.squeeze_module, x4, self.decoder.grad_checkpoint)
+        x4 = self.squeeze_module(x4)
         features = [x, x1, x2, x3, x4]
-        if self.training:
+        if self.training and self.auxiliary:
+            from kornia.filters import laplacian
+
             features.append(laplacian(x.mean(dim=1, keepdim=True), kernel_size=5))
-        result = self.decoder(features, depth)
-        if self.training:
-            gdt, logits = result
-            return Output(logits=logits, gdt=(gdt[0], gdt[1]))
-        return Output(logits=result)
+        logits, guidance = self.decoder(features, depth, self.auxiliary)
+        return Output(logits, guidance)

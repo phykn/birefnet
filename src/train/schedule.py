@@ -15,8 +15,15 @@ def cosine_schedule(
         raise ValueError("train.warmup must be an integer in [0, train.steps)")
     peaks = [group["lr"] for group in optimizer.param_groups]
     for peak in peaks:
-        if not (math.isfinite(min_lr) and math.isfinite(peak) and 0 < peak and 0 <= min_lr <= peak):
-            raise ValueError("learning rates must be finite with 0 <= train.min_lr <= train.lr")
+        if not (
+            math.isfinite(min_lr)
+            and math.isfinite(peak)
+            and 0 < peak
+            and 0 <= min_lr <= peak
+        ):
+            raise ValueError(
+                "learning rates must be finite with 0 <= train.min_lr <= train.lr"
+            )
 
     def factor(peak: float):
         floor = min_lr / peak

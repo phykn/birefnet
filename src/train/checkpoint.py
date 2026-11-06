@@ -1,80 +1,63 @@
 import os
 import uuid
 from pathlib import Path
-from typing import Any
-
+from dataclasses import asdict
 import torch
-
-from ..model.checkpoint import load_trained, pack_model, read_checkpoint, trained_state
-from ..prepare.spec import PreprocessSpec
+from ..config import parse
+from ..model.checkpoint import pack_model, read_checkpoint, load_trained, trained_state
 
 
 class CheckpointStore:
-    def __init__(self, *, model: Any, optimizer: Any, scheduler: Any,
-                 scaler: Any, ema: Any, save_dir: str,
-                 preprocess: PreprocessSpec, ignore_index: int = 255) -> None:
-        self.model = model
-        self.optimizer = optimizer
-        self.scheduler = scheduler
-        self.scaler = scaler
-        self.ema = ema
-        self.save_dir = save_dir
-        self.preprocess = preprocess
-        self.ignore_index = ignore_index
+    def __init__(self, model, optimizer, scheduler, scaler, ema, save_dir, cfg):
+        self.model, self.optimizer, self.scheduler = model, optimizer, scheduler
+        self.scaler, self.ema, self.root, self.cfg = (
+            scaler,
+            ema,
+            Path(save_dir) / "weights",
+            cfg,
+        )
 
-    def save(self, global_step: int, best_region: float) -> None:
-        root = Path(self.save_dir) / "weights"
-        payload = pack_model(self.model, self.preprocess, self.ignore_index)
-        ema_state = self.ema.state_dict()
-        atomic_torch_save(payload, root / "last.pth")
+    def save(self, step, best, metrics):
+        payload = pack_model(self.model, self.cfg, step, metrics)
         averaged = dict(payload)
-        averaged["model"] = dict(payload["model"])
-        averaged["model"].update(trained_state(ema_state))
-        atomic_torch_save(averaged, root / "last_ema.pth")
+        averaged["model"] = {**payload["model"], **trained_state(self.ema.state_dict())}
+        atomic_torch_save(averaged, self.root / "last.pth")
         payload.update(
             optimizer=self.optimizer.state_dict(),
             scheduler=self.scheduler.state_dict(),
             scaler=self.scaler.state_dict(),
-            ema=ema_state,
-            ema_decay=self.ema.decay,
-            global_step=global_step, best_region=best_region,
+            ema=self.ema.state_dict(),
+            best=best,
         )
-        atomic_torch_save(payload, root / "last.train.pth")
+        atomic_torch_save(payload, self.root / "last.train.pth")
 
-    def save_best(self, name: str, metrics: dict[str, float], global_step: int) -> None:
-        root = Path(self.save_dir) / "weights"
-        payload = pack_model(self.model, self.preprocess, self.ignore_index)
-        payload["selection"] = {"name": name, "global_step": global_step,
-                                "metrics": metrics}
-        atomic_torch_save(payload, root / f"best_{name}.pth")
+    def save_best(self, metrics, step):
+        atomic_torch_save(
+            pack_model(self.model, self.cfg, step, metrics), self.root / "best_miou.pth"
+        )
 
-    def load_resume(self, path: str) -> tuple[int, float]:
-        state = read_checkpoint(path, self.model.num_classes)
-        if "optimizer" not in state or "ema" not in state:
-            raise RuntimeError("Unsupported training checkpoint format")
-        if state.get("ignore_index", 255) != self.ignore_index:
-            raise RuntimeError("Checkpoint ignore_index differs from configuration")
-        if PreprocessSpec.from_meta(state) != self.preprocess:
-            raise RuntimeError("Checkpoint preprocess differs from configuration")
-        decay = float(state["ema_decay"])
-        if not 0.0 <= decay < 1.0:
-            raise RuntimeError("Checkpoint EMA decay must be in [0, 1)")
+    def load_resume(self, path):
+        state = read_checkpoint(path)
+        if asdict(parse(state["config"], ignore_unknown=True)) != asdict(self.cfg):
+            raise ValueError("Resume checkpoint config differs from saved config.yaml")
+        for key in ("optimizer", "scheduler", "scaler", "ema", "best", "step"):
+            if key not in state:
+                raise ValueError(f"Resume checkpoint missing {key}")
         load_trained(self.model, state["model"])
         self.optimizer.load_state_dict(state["optimizer"])
         self.scheduler.load_state_dict(state["scheduler"])
         self.scaler.load_state_dict(state["scaler"])
         self.ema.load_state_dict(state["ema"])
-        self.ema.decay = decay
-        return int(state["global_step"]), float(state["best_region"])
+        return state["step"], state["best"]
 
 
-def atomic_torch_save(payload: dict[str, Any], path: str | os.PathLike[str]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+def atomic_torch_save(payload, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         torch.save(payload, tmp)
-        os.replace(tmp, target)
+        os.replace(tmp, path)
     finally:
         if tmp.exists():
             tmp.unlink()

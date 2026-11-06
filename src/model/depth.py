@@ -25,7 +25,11 @@ class Depth(nn.Module):
     def load(cls, path: str | Path) -> "Depth":
         from transformers import AutoModelForDepthEstimation
 
-        return cls(AutoModelForDepthEstimation.from_pretrained(str(path), local_files_only=True))
+        return cls(
+            AutoModelForDepthEstimation.from_pretrained(
+                str(path), local_files_only=True
+            )
+        )
 
     def train(self, mode: bool = True) -> "Depth":
         return super().train(False)
@@ -36,9 +40,13 @@ class Depth(nn.Module):
         # the ImageNet mean is not a multiple of 1/255.
         valid = (x != 0).any(dim=1, keepdim=True)
         # Both models expect ImageNet-normalized input, so x is passed as it is.
-        small = F.interpolate(x, size=(DEPTH_SIZE, DEPTH_SIZE), mode="bicubic", align_corners=False)
+        small = F.interpolate(
+            x, size=(DEPTH_SIZE, DEPTH_SIZE), mode="bicubic", align_corners=False
+        )
         depth = self.net(pixel_values=small).predicted_depth[:, None].float()
-        depth = F.interpolate(depth, size=x.shape[-2:], mode="bilinear", align_corners=False)
+        depth = F.interpolate(
+            depth, size=x.shape[-2:], mode="bilinear", align_corners=False
+        )
         return rescale(depth, valid)
 
 

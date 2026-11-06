@@ -1,20 +1,148 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from .deform import DeformableConv2d
 from einops import rearrange
-from torch.utils.checkpoint import checkpoint
 
-from .block import BasicDecBlk, BasicLatBlk
+
+class _ASPPModuleDeformable(nn.Module):
+    def __init__(
+        self, in_channels: int, planes: int, kernel_size: int, padding: int
+    ) -> None:
+        super().__init__()
+        self.atrous_conv = DeformableConv2d(
+            in_channels=in_channels,
+            out_channels=planes,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=padding,
+            bias=False,
+        )
+        self.bn = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.atrous_conv(x)
+        x = self.bn(x)
+        return self.relu(x)
+
+
+class ASPPDeformable(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        parallel_block_sizes: tuple[int, ...] = (1, 3, 7),
+    ) -> None:
+        super().__init__()
+        out_channels = in_channels
+        self.planes = 256
+
+        self.aspp1 = _ASPPModuleDeformable(
+            in_channels=in_channels,
+            planes=self.planes,
+            kernel_size=1,
+            padding=0,
+        )
+
+        self.aspp_deforms = nn.ModuleList(
+            [
+                _ASPPModuleDeformable(
+                    in_channels=in_channels,
+                    planes=self.planes,
+                    kernel_size=conv_size,
+                    padding=int(conv_size // 2),
+                )
+                for conv_size in parallel_block_sizes
+            ]
+        )
+
+        self.global_avg_pool = nn.Sequential(
+            nn.AdaptiveAvgPool2d(output_size=(1, 1)),
+            nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=self.planes,
+                kernel_size=1,
+                stride=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(self.planes),
+            nn.ReLU(inplace=True),
+        )
+
+        self.conv1 = nn.Conv2d(
+            in_channels=self.planes * (2 + len(self.aspp_deforms)),
+            out_channels=out_channels,
+            kernel_size=1,
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(0.5)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.aspp1(x)
+        x_aspp_deforms = [aspp_deform(x) for aspp_deform in self.aspp_deforms]
+        x5 = self.global_avg_pool(x)
+
+        x5 = F.interpolate(
+            x5,
+            size=x1.size()[2:],
+            mode="bilinear",
+            align_corners=True,
+        )
+
+        x = torch.cat((x1, *x_aspp_deforms, x5), dim=1)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        return self.dropout(x)
+
+
+class BasicDecBlk(nn.Module):
+    def __init__(self, in_channels: int = 64, out_channels: int = 64) -> None:
+        super().__init__()
+        inter_channels = 64
+
+        self.conv_in = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=inter_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+        self.relu_in = nn.ReLU(inplace=True)
+        self.dec_att = ASPPDeformable(in_channels=inter_channels)
+
+        self.conv_out = nn.Conv2d(
+            in_channels=inter_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+        self.bn_in = nn.BatchNorm2d(inter_channels)
+        self.bn_out = nn.BatchNorm2d(out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv_in(x)
+        x = self.bn_in(x)
+        x = self.relu_in(x)
+        x = self.dec_att(x)
+        x = self.conv_out(x)
+        x = self.bn_out(x)
+        return x
+
+
+class BasicLatBlk(nn.Module):
+    def __init__(self, in_channels: int = 64, out_channels: int = 64) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x)
+
 
 GDT_INTER_CHANNELS = 16
-
-
-def run_block(block: nn.Module, x: torch.Tensor, recompute: bool) -> torch.Tensor:
-    """Call a block, optionally dropping its activations and recomputing them in backward."""
-    if recompute and torch.is_grad_enabled():
-        return checkpoint(block, x, use_reentrant=False)
-    return block(x)
 
 
 class ImageProjection(nn.Module):
@@ -44,11 +172,8 @@ class Decoder(nn.Module):
         channels: list[int],
         num_classes: int = 4,
         depth: bool = False,
-        grad_checkpoint: bool = False,
     ) -> None:
         super().__init__()
-
-        self.grad_checkpoint = grad_checkpoint
 
         ipt_blk_in_channels = [3072, 768, 192, 48, 3]
         ipt_blk_out_channels = [channels[i] // 8 for i in range(4)]
@@ -153,19 +278,36 @@ class Decoder(nn.Module):
     def guidance(self, logits: torch.Tensor, gradient: torch.Tensor) -> torch.Tensor:
         # All class interfaces contribute; background class 0 is not privileged.
         probs = logits.detach().softmax(dim=1)
-        dx = F.pad((probs[..., 1:] - probs[..., :-1]).abs().sum(1, keepdim=True), (0, 1))
-        dy = F.pad((probs[..., 1:, :] - probs[..., :-1, :]).abs().sum(1, keepdim=True), (0, 0, 0, 1))
-        edge = F.interpolate(dx + dy, size=gradient.shape[2:], mode="bilinear", align_corners=True)
+        dx = F.pad(
+            (probs[..., 1:] - probs[..., :-1]).abs().sum(1, keepdim=True), (0, 1)
+        )
+        dy = F.pad(
+            (probs[..., 1:, :] - probs[..., :-1, :]).abs().sum(1, keepdim=True),
+            (0, 0, 0, 1),
+        )
+        edge = F.interpolate(
+            dx + dy, size=gradient.shape[2:], mode="bilinear", align_corners=True
+        )
         edge = edge / edge.amax(dim=(2, 3), keepdim=True).clamp_min(1e-6)
         gradient = gradient.detach().abs()
         gradient = gradient / gradient.amax(dim=(2, 3), keepdim=True).clamp_min(1e-6)
         return (gradient * edge).detach()
 
     def _project(
-        self, level: int, x: torch.Tensor, depth: torch.Tensor | None, feature: torch.Tensor
+        self,
+        level: int,
+        x: torch.Tensor,
+        depth: torch.Tensor | None,
+        feature: torch.Tensor,
     ) -> torch.Tensor:
         """Image patches (plus depth, when built with it) concatenated onto a feature map."""
-        blocks = (self.ipt_blk5, self.ipt_blk4, self.ipt_blk3, self.ipt_blk2, self.ipt_blk1)
+        blocks = (
+            self.ipt_blk5,
+            self.ipt_blk4,
+            self.ipt_blk3,
+            self.ipt_blk2,
+            self.ipt_blk1,
+        )
         patches = blocks[level](x, feature)
         if self.dpt_blks is not None:
             if depth is None:
@@ -177,38 +319,64 @@ class Decoder(nn.Module):
         self,
         features: list[torch.Tensor] | tuple[torch.Tensor, ...],
         depth: torch.Tensor | None = None,
-    ) -> list[torch.Tensor] | tuple[list[list[torch.Tensor]], list[torch.Tensor]]:
-        """Eval returns the full-size logits; training also returns the side logits
-        before them and the gradient guidance (predictions, labels) per stage."""
-        if self.training:
+        auxiliary: bool = False,
+    ) -> tuple[
+        list[torch.Tensor], tuple[list[torch.Tensor], list[torch.Tensor]] | None
+    ]:
+        if self.training and auxiliary:
             x, x1, x2, x3, x4, gradient = features
         else:
             x, x1, x2, x3, x4 = features
         stages = (
-            (self.decoder_block4, self.conv_ms_spvn_4, self.gdt_convs_4,
-             self.gdt_convs_pred_4, self.gdt_convs_attn_4, self.lateral_block4, x3),
-            (self.decoder_block3, self.conv_ms_spvn_3, self.gdt_convs_3,
-             self.gdt_convs_pred_3, self.gdt_convs_attn_3, self.lateral_block3, x2),
-            (self.decoder_block2, self.conv_ms_spvn_2, self.gdt_convs_2,
-             self.gdt_convs_pred_2, self.gdt_convs_attn_2, self.lateral_block2, x1),
+            (
+                self.decoder_block4,
+                self.conv_ms_spvn_4,
+                self.gdt_convs_4,
+                self.gdt_convs_pred_4,
+                self.gdt_convs_attn_4,
+                self.lateral_block4,
+                x3,
+            ),
+            (
+                self.decoder_block3,
+                self.conv_ms_spvn_3,
+                self.gdt_convs_3,
+                self.gdt_convs_pred_3,
+                self.gdt_convs_attn_3,
+                self.lateral_block3,
+                x2,
+            ),
+            (
+                self.decoder_block2,
+                self.conv_ms_spvn_2,
+                self.gdt_convs_2,
+                self.gdt_convs_pred_2,
+                self.gdt_convs_attn_2,
+                self.lateral_block2,
+                x1,
+            ),
         )
         side, gdt_preds, gdt_labels = [], [], []
         p = self._project(0, x, depth, x4)
-        for level, (block, head, gdt, gdt_pred, gdt_attn, lateral, skip) in enumerate(stages, 1):
-            p = run_block(block, p, self.grad_checkpoint)
+        for level, (block, head, gdt, gdt_pred, gdt_attn, lateral, skip) in enumerate(
+            stages, 1
+        ):
+            p = block(p)
             p_gdt = gdt(p)
             if self.training:
                 logits = head(p)
                 side.append(logits)
-                gdt_labels.append(self.guidance(logits, gradient))
-                gdt_preds.append(gdt_pred(p_gdt))
+                if auxiliary:
+                    gdt_labels.append(self.guidance(logits, gradient))
+                    gdt_preds.append(gdt_pred(p_gdt))
             p = p * gdt_attn(p_gdt).sigmoid()
-            p = F.interpolate(p, size=skip.shape[2:], mode="bilinear", align_corners=True)
+            p = F.interpolate(
+                p, size=skip.shape[2:], mode="bilinear", align_corners=True
+            )
             p = self._project(level, x, depth, p + lateral(skip))
 
-        p = run_block(self.decoder_block1, p, self.grad_checkpoint)
+        p = self.decoder_block1(p)
         p = F.interpolate(p, size=x.shape[2:], mode="bilinear", align_corners=True)
         logits = [*side, self.conv_out1(self._project(4, x, depth, p))]
-        if not self.training:
-            return logits
-        return [gdt_preds, gdt_labels], logits
+        guidance = (gdt_preds, gdt_labels) if self.training and auxiliary else None
+        return logits, guidance

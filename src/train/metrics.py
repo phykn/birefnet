@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 
 
 def confusion_matrix(prediction, target, num_classes=4, ignore_index=255):
@@ -7,9 +8,11 @@ def confusion_matrix(prediction, target, num_classes=4, ignore_index=255):
         raise ValueError("prediction and target shapes must match")
     active = target != ignore_index
     truth, pred = target[active].long(), prediction[active].long()
-    if ((truth < 0) | (truth >= num_classes) | (pred < 0) | (pred >= num_classes)).any():
+    if (
+        (truth < 0) | (truth >= num_classes) | (pred < 0) | (pred >= num_classes)
+    ).any():
         raise ValueError("invalid class index in active metric pixels")
-    counts = torch.bincount(truth * num_classes + pred, minlength=num_classes ** 2)
+    counts = torch.bincount(truth * num_classes + pred, minlength=num_classes**2)
     return counts.reshape(num_classes, num_classes)
 
 
@@ -22,8 +25,27 @@ def scores(confusion):
     nan = torch.full_like(hit, float("nan"))
     union = true + pred - hit
     iou = torch.where(union > 0, hit / union.clamp_min(1), nan)
-    dice = torch.where(true + pred > 0, 2 * hit / (true + pred).clamp_min(1), nan)
-    recall = torch.where(true > 0, hit / true.clamp_min(1), nan)
-    return {"per_class_iou": iou, "per_class_dice": dice, "per_class_recall": recall,
-            "miou": iou.nanmean(), "mdice": dice.nanmean(), "mean_recall": recall.nanmean(),
-            "pixel_accuracy": hit.sum() / matrix.sum() if matrix.sum() > 0 else matrix.new_tensor(float("nan"))}
+    return {
+        "miou": float(iou.nanmean()),
+        **{f"class_{i}_iou": float(v) for i, v in enumerate(iou)},
+        "pixel_accuracy": float(hit.sum() / matrix.sum())
+        if matrix.sum()
+        else float("nan"),
+    }
+
+
+def evaluate(model, pairs, tiles=(1,)):
+    from ..data.io import read_pair
+    from ..predict import predict_logits
+
+    matrix = torch.zeros(model.num_classes, model.num_classes, dtype=torch.int64)
+    if not pairs:
+        raise ValueError("Evaluation needs at least one pair")
+    model.eval()
+    for image_path, mask_path in tqdm(pairs, desc="Evaluating", leave=False):
+        image, mask = read_pair(image_path, mask_path, model.num_classes)
+        pred = predict_logits(model, image, tiles=tiles).argmax(0)
+        matrix += confusion_matrix(
+            torch.from_numpy(pred), torch.from_numpy(mask), model.num_classes
+        )
+    return scores(matrix)

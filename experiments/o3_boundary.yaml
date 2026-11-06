@@ -1,0 +1,6 @@
+loss:
+  boundary: 0.5
+  boundary_width: 3
+train:
+  steps: 3000
+  crop: 512
