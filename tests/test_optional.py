@@ -5,7 +5,7 @@ from src.config import parse, load_config
 from src.model import BiRefNet, Output
 from src.train.loss import make_band, SegmentationLoss, TrainLoss
 from tests.model_utils import TinyBackbone
-from tests.test_pipeline import trainer
+from tests.train_utils import trainer
 
 
 @pytest.mark.parametrize(

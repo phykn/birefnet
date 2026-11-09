@@ -49,9 +49,7 @@ def convert(image: np.ndarray, is_sem: bool = False) -> np.ndarray:
     rgb = _to_rgb(image)
     if not is_sem:
         return rgb
-    # One z-scored gray image in all three channels: the frozen backbone sees a
-    # plain grayscale photo, which kept its features steadiest across SEM
-    # brightness/contrast settings.
+    # Keep the frozen backbone's three channels identical for SEM images.
     return np.repeat(_zscore(to_gray(rgb))[..., None], 3, axis=-1)
 
 
@@ -80,8 +78,10 @@ class Fit:
             )
         return cv2.resize(image, (self.dst_w, self.dst_h), interpolation=interp)
 
-    def pad(self, image: np.ndarray) -> np.ndarray:
-        canvas = np.zeros((self.size, self.size, *image.shape[2:]), dtype=image.dtype)
+    def pad(self, image: np.ndarray, value=0) -> np.ndarray:
+        canvas = np.full(
+            (self.size, self.size, *image.shape[2:]), value, dtype=image.dtype
+        )
         canvas[self.region] = image
         return canvas
 
@@ -121,23 +121,11 @@ def fit_tensor(
     return np.transpose(canvas, (2, 0, 1)), fit
 
 
-def fit_image(
-    image: np.ndarray,
-    size: int = 1024,
-    is_sem: bool = False,
-    fit: Fit | None = None,
-) -> tuple[np.ndarray, np.ndarray, Fit]:
-    tensor, fit = fit_tensor(image, size=size, is_sem=is_sem, fit=fit)
-    valid = np.zeros((fit.size, fit.size), dtype=np.float32)
-    valid[fit.region] = 1.0
-    return tensor, valid[None], fit
-
-
-def fit_mask(mask: np.ndarray, fit: Fit) -> np.ndarray:
+def fit_mask(mask: np.ndarray, fit: Fit, padding=0) -> np.ndarray:
     if mask.ndim == 3:
         mask = mask[..., 0]
     resized = fit.resize(mask.astype(np.float32), cv2.INTER_NEAREST_EXACT)
-    return fit.pad(resized)[None]
+    return fit.pad(resized, padding)
 
 
 def restore(logit: np.ndarray, fit: Fit) -> np.ndarray:

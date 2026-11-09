@@ -6,55 +6,22 @@ import pytest
 import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 from src.config import ROOT, Config, save_config
-from src.model import Output
 from src.model.checkpoint import read_checkpoint, load, load_trained
 from src.predict import predict_logits
-from src.train.trainer import Trainer
-from src.train.loss import TrainLoss
-from src.train.schedule import cosine_schedule
 from src.data.io import pairs, read_image
 from tests.sample_data import write
-
-
-class Tiny(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.decoder = torch.nn.Conv2d(3, 4, 1)
-        self.num_classes = 4
-
-    def forward(self, x):
-        return Output([self.decoder(x)])
-
-    def list_trainable(self):
-        return list(self.parameters())
-
-
-def trainer(tmp_path, model=None):
-    cfg = Config()
-    cfg.train.steps = 4
-    cfg.train.warmup = 0
-    cfg.train.accum = 1
-    m = model or Tiny()
-    opt = torch.optim.AdamW(m.parameters(), lr=cfg.train.lr)
-    sch = cosine_schedule(opt, 4, cfg.train.min_lr)
-    batches = [
-        {
-            "image": torch.rand(1, 3, 16, 16),
-            "mask": torch.zeros(1, 16, 16, dtype=torch.long),
-        }
-    ]
-    return Trainer(m, batches, [], TrainLoss(), opt, sch, tmp_path, cfg)
+from tests.train_utils import Tiny, trainer
 
 
 def test_resume(tmp_path):
     t = trainer(tmp_path)
     t.step()
-    t.best_region = 0.5
+    t.best_miou = 0.5
     t.save()
     expected = {k: v.clone() for k, v in t.model.state_dict().items()}
     restored = trainer(tmp_path)
     restored.load_resume(tmp_path / "weights/last.train.pth")
-    assert restored.global_step == 1 and restored.best_region == 0.5
+    assert restored.global_step == 1 and restored.best_miou == 0.5
     assert restored.scheduler.state_dict() == t.scheduler.state_dict()
     assert restored.optimizer.param_groups[0]["lr"] == t.optimizer.param_groups[0]["lr"]
     for k, v in restored.model.state_dict().items():
@@ -245,6 +212,33 @@ def test_early_rejections(tmp_path, monkeypatch):
     (data / "mask/sample_01.png").unlink()
     with pytest.raises(RuntimeError, match="missing"):
         run.train(resume=target / "weights/last.train.pth")
+
+
+def test_train_and_resume_paths_use_project_root(tmp_path, monkeypatch):
+    from src import run
+
+    root = tmp_path / "project"
+    write(root / "data")
+    cfg = Config()
+    cfg.data.image_dir = "data/image"
+    cfg.data.mask_dir = "data/mask"
+    cfg.train.steps = cfg.train.val_every = cfg.train.save_every = 1
+    cfg.train.warmup = 0
+    cfg.train.accum = 1
+    cfg.train.crop = 64
+    cfg.loader.batch_size = 1
+    cfg.loader.num_workers = 0
+    save_config(cfg, root / "config.yaml")
+    monkeypatch.setattr("src.config.ROOT", root)
+    monkeypatch.setattr(run, "build", lambda cfg: Tiny())
+    monkeypatch.chdir(tmp_path)
+    target = run.train(runs="run", device=torch.device("cpu"))
+    assert target.parent == root / "run"
+    checkpoint = target / "weights/last.train.pth"
+    assert run.train(
+        resume=checkpoint.relative_to(root), device=torch.device("cpu")
+    ) == target
+    assert read_checkpoint(checkpoint)["step"] == 1
 
 
 def test_skipped_limit(tmp_path, monkeypatch):

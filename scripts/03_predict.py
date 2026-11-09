@@ -22,18 +22,15 @@ def run(
     tiles=(1,),
     mask_path=None,
     class_id=None,
-    ignore_index=None,
 ) -> tuple[np.ndarray, list]:
     if class_id is not None and not 0 <= class_id < model.num_classes:
         raise ValueError("class_id must be in [0, num_classes)")
-    ignore_index = 255
-    image = read_image(str(image_path))
-    panels = [image]
     if mask_path is not None:
-        _, target = read_pair(str(image_path), str(mask_path), model.num_classes)
-        if target.shape != image.shape[:2]:
-            raise ValueError("Image and mask dimensions differ")
-        panels.append(colorize(target, model.num_classes, target != ignore_index))
+        image, target = read_pair(image_path, mask_path, model.num_classes)
+        panels = [image, colorize(target, model.num_classes, target != 255)]
+    else:
+        image = read_image(image_path)
+        panels = [image]
     logits = predict_logits(model, image, tiles=tiles)
     labels = logits.argmax(axis=0).astype(np.uint8)
     colors = colorize(labels, model.num_classes)

@@ -1,5 +1,5 @@
 import numpy as np
-from ..prepare import convert, fit_image, fit_mask, plan
+from ..prepare import fit_tensor, fit_mask, plan
 from .augment import blur, edge_mask, flip, gamma, illumination, jitter, noise, zoom
 from .io import read_pair
 
@@ -23,12 +23,10 @@ class MaskDataset:
         image = noise(image, a.noise)
         if np.random.random() < a.hide_edges:
             image, mask = edge_mask(image, mask)
-        image = convert(image, is_sem=True)
         fit = plan(*image.shape[:2], size=cfg.train.crop, scale=cfg.train.crop / side)
-        tensor, valid, _ = fit_image(image, fit=fit)
-        labels = fit_mask(mask, fit)[0].astype(np.int64)
-        labels[valid[0] == 0] = 255
-        cut = fit_mask(cut, fit)[0]
+        tensor, _ = fit_tensor(image, is_sem=True, fit=fit)
+        labels = fit_mask(mask, fit, padding=255).astype(np.int64)
+        cut = fit_mask(cut, fit)
         pixels, labels, cut = flip(tensor.transpose(1, 2, 0), labels, cut)
         return {
             "image": np.ascontiguousarray(pixels.transpose(2, 0, 1)),

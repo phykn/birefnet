@@ -81,8 +81,9 @@ def parse(values, ignore_unknown=False):
     if not isinstance(values, dict):
         raise ValueError("config: expected mapping")
     cfg = Config()
+    sections = {f.name for f in fields(cfg)}
     for section, content in values.items():
-        if section not in asdict(cfg):
+        if section not in sections:
             if ignore_unknown:
                 continue
             raise ValueError(f"{section}: unknown key")
@@ -150,13 +151,13 @@ def parse(values, ignore_unknown=False):
 
 
 def read_config(path):
-    return parse(yaml.safe_load(Path(path).read_text()))
+    return parse(yaml.safe_load(resolve(path).read_text()))
 
 
 def load_config(path=None):
     values = yaml.safe_load((ROOT / "config.yaml").read_text())
     if path is not None:
-        override = yaml.safe_load(Path(path).read_text())
+        override = yaml.safe_load(resolve(path).read_text())
         if not isinstance(override, dict):
             raise ValueError("config: expected mapping")
         for key, value in override.items():

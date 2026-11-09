@@ -175,105 +175,53 @@ class Decoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        ipt_blk_in_channels = [3072, 768, 192, 48, 3]
-        ipt_blk_out_channels = [channels[i] // 8 for i in range(4)]
+        patch_channels = (3072, 768, 192, 48, 3)
+        projection_channels = [channels[0] // 8, *(c // 8 for c in channels)]
+        # Keep checkpoint names and seeded initialization order.
+        for level, cin, cout in zip(
+            range(5, 0, -1), patch_channels, projection_channels
+        ):
+            self.add_module(f"ipt_blk{level}", ImageProjection(cin, cout))
 
-        self.ipt_blk5 = ImageProjection(
-            ipt_blk_in_channels[0], ipt_blk_out_channels[0], inter_channels=64
-        )
-        self.ipt_blk4 = ImageProjection(
-            ipt_blk_in_channels[1], ipt_blk_out_channels[0], inter_channels=64
-        )
-        self.ipt_blk3 = ImageProjection(
-            ipt_blk_in_channels[2], ipt_blk_out_channels[1], inter_channels=64
-        )
-        self.ipt_blk2 = ImageProjection(
-            ipt_blk_in_channels[3], ipt_blk_out_channels[2], inter_channels=64
-        )
-        self.ipt_blk1 = ImageProjection(
-            ipt_blk_in_channels[4], ipt_blk_out_channels[3], inter_channels=64
-        )
-
-        # Depth enters next to the image patches at every level. The last conv of each
-        # branch starts at zero, so training begins exactly at the pretrained decoder
-        # and depth is used only as far as it helps.
+        # Zero initialization preserves the pretrained decoder before depth learns.
         self.dpt_blks = None
         if depth:
             self.dpt_blks = nn.ModuleList(
-                ImageProjection(in_channels // 3, out_channels, inter_channels=16)
-                for in_channels, out_channels in zip(
-                    ipt_blk_in_channels,
-                    [ipt_blk_out_channels[0], *ipt_blk_out_channels],
-                )
+                ImageProjection(cin // 3, cout, inter_channels=16)
+                for cin, cout in zip(patch_channels, projection_channels)
             )
             for block in self.dpt_blks:
                 nn.init.zeros_(block.conv_out.weight)
                 nn.init.zeros_(block.conv_out.bias)
 
-        bb_neck_out_channels = channels.copy()
+        outputs = [*channels[1:], channels[-1] // 2]
+        for level, cin, extra, cout in zip(
+            range(4, 0, -1), channels, projection_channels, outputs
+        ):
+            self.add_module(f"decoder_block{level}", BasicDecBlk(cin + extra, cout))
 
-        dec_blk_out_channels = [c for c in bb_neck_out_channels[1:]] + [
-            bb_neck_out_channels[-1] // 2
-        ]
-
-        dec_blk_in_channels = [
-            bb_neck_out_channels[i] + ipt_blk_out_channels[max(0, i - 1)]
-            for i in range(len(bb_neck_out_channels))
-        ]
-
-        self.decoder_block4 = BasicDecBlk(
-            dec_blk_in_channels[0], dec_blk_out_channels[0]
+        self.conv_out1 = nn.Sequential(
+            nn.Conv2d(outputs[-1] + projection_channels[-1], num_classes, 1)
         )
-        self.decoder_block3 = BasicDecBlk(
-            dec_blk_in_channels[1], dec_blk_out_channels[1]
-        )
-        self.decoder_block2 = BasicDecBlk(
-            dec_blk_in_channels[2], dec_blk_out_channels[2]
-        )
-        self.decoder_block1 = BasicDecBlk(
-            dec_blk_in_channels[3], dec_blk_out_channels[3]
-        )
-
-        conv_out1_in_channels = dec_blk_out_channels[3] + ipt_blk_out_channels[3]
-        self.conv_out1 = nn.Sequential(nn.Conv2d(conv_out1_in_channels, num_classes, 1))
-
-        self.lateral_block4 = BasicLatBlk(
-            bb_neck_out_channels[1], dec_blk_out_channels[0]
-        )
-        self.lateral_block3 = BasicLatBlk(
-            bb_neck_out_channels[2], dec_blk_out_channels[1]
-        )
-        self.lateral_block2 = BasicLatBlk(
-            bb_neck_out_channels[3], dec_blk_out_channels[2]
-        )
-
-        self.conv_ms_spvn_4 = nn.Conv2d(dec_blk_out_channels[0], num_classes, 1)
-        self.conv_ms_spvn_3 = nn.Conv2d(dec_blk_out_channels[1], num_classes, 1)
-        self.conv_ms_spvn_2 = nn.Conv2d(dec_blk_out_channels[2], num_classes, 1)
-
-        self.gdt_convs_4 = nn.Sequential(
-            nn.Conv2d(dec_blk_out_channels[0], GDT_INTER_CHANNELS, 3, padding=1),
-            nn.BatchNorm2d(GDT_INTER_CHANNELS),
-            nn.ReLU(inplace=True),
-        )
-        self.gdt_convs_3 = nn.Sequential(
-            nn.Conv2d(dec_blk_out_channels[1], GDT_INTER_CHANNELS, 3, padding=1),
-            nn.BatchNorm2d(GDT_INTER_CHANNELS),
-            nn.ReLU(inplace=True),
-        )
-        self.gdt_convs_2 = nn.Sequential(
-            nn.Conv2d(dec_blk_out_channels[2], GDT_INTER_CHANNELS, 3, padding=1),
-            nn.BatchNorm2d(GDT_INTER_CHANNELS),
-            nn.ReLU(inplace=True),
-        )
-
-        self.gdt_convs_pred_4 = nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1))
-        self.gdt_convs_pred_3 = nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1))
-        self.gdt_convs_pred_2 = nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1))
-
-        self.gdt_convs_attn_4 = nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1))
-        self.gdt_convs_attn_3 = nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1))
-        self.gdt_convs_attn_2 = nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1))
+        for level, cin, cout in zip(range(4, 1, -1), channels[1:], outputs):
+            self.add_module(f"lateral_block{level}", BasicLatBlk(cin, cout))
+        for level, cout in zip(range(4, 1, -1), outputs):
+            self.add_module(f"conv_ms_spvn_{level}", nn.Conv2d(cout, num_classes, 1))
+        for level, cout in zip(range(4, 1, -1), outputs):
+            self.add_module(
+                f"gdt_convs_{level}",
+                nn.Sequential(
+                    nn.Conv2d(cout, GDT_INTER_CHANNELS, 3, padding=1),
+                    nn.BatchNorm2d(GDT_INTER_CHANNELS),
+                    nn.ReLU(inplace=True),
+                ),
+            )
+        for branch in ("pred", "attn"):
+            for level in range(4, 1, -1):
+                self.add_module(
+                    f"gdt_convs_{branch}_{level}",
+                    nn.Sequential(nn.Conv2d(GDT_INTER_CHANNELS, 1, 1)),
+                )
 
     def guidance(self, logits: torch.Tensor, gradient: torch.Tensor) -> torch.Tensor:
         # All class interfaces contribute; background class 0 is not privileged.
@@ -300,15 +248,7 @@ class Decoder(nn.Module):
         depth: torch.Tensor | None,
         feature: torch.Tensor,
     ) -> torch.Tensor:
-        """Image patches (plus depth, when built with it) concatenated onto a feature map."""
-        blocks = (
-            self.ipt_blk5,
-            self.ipt_blk4,
-            self.ipt_blk3,
-            self.ipt_blk2,
-            self.ipt_blk1,
-        )
-        patches = blocks[level](x, feature)
+        patches = getattr(self, f"ipt_blk{5 - level}")(x, feature)
         if self.dpt_blks is not None:
             if depth is None:
                 raise ValueError("This decoder was built with depth; pass a depth map")
@@ -327,40 +267,15 @@ class Decoder(nn.Module):
             x, x1, x2, x3, x4, gradient = features
         else:
             x, x1, x2, x3, x4 = features
-        stages = (
-            (
-                self.decoder_block4,
-                self.conv_ms_spvn_4,
-                self.gdt_convs_4,
-                self.gdt_convs_pred_4,
-                self.gdt_convs_attn_4,
-                self.lateral_block4,
-                x3,
-            ),
-            (
-                self.decoder_block3,
-                self.conv_ms_spvn_3,
-                self.gdt_convs_3,
-                self.gdt_convs_pred_3,
-                self.gdt_convs_attn_3,
-                self.lateral_block3,
-                x2,
-            ),
-            (
-                self.decoder_block2,
-                self.conv_ms_spvn_2,
-                self.gdt_convs_2,
-                self.gdt_convs_pred_2,
-                self.gdt_convs_attn_2,
-                self.lateral_block2,
-                x1,
-            ),
-        )
         side, gdt_preds, gdt_labels = [], [], []
         p = self._project(0, x, depth, x4)
-        for level, (block, head, gdt, gdt_pred, gdt_attn, lateral, skip) in enumerate(
-            stages, 1
-        ):
+        for level, skip in zip(range(4, 1, -1), (x3, x2, x1)):
+            block = getattr(self, f"decoder_block{level}")
+            head = getattr(self, f"conv_ms_spvn_{level}")
+            gdt = getattr(self, f"gdt_convs_{level}")
+            gdt_pred = getattr(self, f"gdt_convs_pred_{level}")
+            gdt_attn = getattr(self, f"gdt_convs_attn_{level}")
+            lateral = getattr(self, f"lateral_block{level}")
             p = block(p)
             p_gdt = gdt(p)
             if self.training:
@@ -373,7 +288,7 @@ class Decoder(nn.Module):
             p = F.interpolate(
                 p, size=skip.shape[2:], mode="bilinear", align_corners=True
             )
-            p = self._project(level, x, depth, p + lateral(skip))
+            p = self._project(5 - level, x, depth, p + lateral(skip))
 
         p = self.decoder_block1(p)
         p = F.interpolate(p, size=x.shape[2:], mode="bilinear", align_corners=True)

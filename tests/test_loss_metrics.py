@@ -1,7 +1,7 @@
 import torch
 from src.model import Output
 from src.train.loss import TrainLoss
-from src.train.metrics import confusion_matrix, scores
+from src.evaluate import confusion_matrix, scores
 
 
 def test_ce_and_ignore():

@@ -1,6 +1,9 @@
 import torch
 from tqdm import tqdm
 
+from .data.io import read_pair
+from .predict import predict_logits
+
 
 def confusion_matrix(prediction, target, num_classes=4, ignore_index=255):
     """Rows are true classes; columns are predicted classes. Ignored pixels are left out."""
@@ -35,9 +38,6 @@ def scores(confusion):
 
 
 def evaluate(model, pairs, tiles=(1,)):
-    from ..data.io import read_pair
-    from ..predict import predict_logits
-
     matrix = torch.zeros(model.num_classes, model.num_classes, dtype=torch.int64)
     if not pairs:
         raise ValueError("Evaluation needs at least one pair")

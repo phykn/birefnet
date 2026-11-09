@@ -85,34 +85,18 @@ def plan(
     ]
 
 
-def _ramp(length: int) -> np.ndarray:
-    if length <= 0:
-        return np.empty(0, dtype=np.float32)
-    angles = np.linspace(0.0, np.pi, length + 2, dtype=np.float32)[1:-1]
-    return 0.5 - 0.5 * np.cos(angles)
+def _axis_weight(length: int, before: int, after: int) -> np.ndarray:
+    weight = np.ones(length, dtype=np.float32)
+    for count, view in ((before, weight), (after, weight[::-1])):
+        if count:
+            angles = np.linspace(0.0, np.pi, count + 2, dtype=np.float32)[1:-1]
+            view[:count] = np.minimum(view[:count], 0.5 - 0.5 * np.cos(angles))
+    return weight
 
 
 def weigh(tile: Tile) -> np.ndarray:
-    wy = np.ones(tile.height, dtype=np.float32)
-    wx = np.ones(tile.width, dtype=np.float32)
-    if tile.overlap_top:
-        wy[: tile.overlap_top] = np.minimum(
-            wy[: tile.overlap_top], _ramp(tile.overlap_top)
-        )
-    if tile.overlap_bottom:
-        wy[-tile.overlap_bottom :] = np.minimum(
-            wy[-tile.overlap_bottom :],
-            _ramp(tile.overlap_bottom)[::-1],
-        )
-    if tile.overlap_left:
-        wx[: tile.overlap_left] = np.minimum(
-            wx[: tile.overlap_left], _ramp(tile.overlap_left)
-        )
-    if tile.overlap_right:
-        wx[-tile.overlap_right :] = np.minimum(
-            wx[-tile.overlap_right :],
-            _ramp(tile.overlap_right)[::-1],
-        )
+    wy = _axis_weight(tile.height, tile.overlap_top, tile.overlap_bottom)
+    wx = _axis_weight(tile.width, tile.overlap_left, tile.overlap_right)
     return wy[:, None] * wx[None, :]
 
 

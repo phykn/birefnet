@@ -34,6 +34,8 @@ data/train/mask/0001.png
 
 Edit `config.yaml`, or pass `--config path/to/overrides.yaml` with just the settings you want to override. `train.crop` accepts multiples of 32 from 64 to 1024. Prediction uses a 1024 × 1024 model input and restores the result to the original image size. [Default settings](config.yaml)
 
+Relative config, dataset, base-weight, and training-run paths resolve from the project root, even when launched from another directory.
+
 Each run saves its resolved config, training and validation split, TensorBoard logs, and checkpoints under `run/RUN_ID/`. Replace `RUN_ID` with your run directory name in the commands below.
 
 ```bash
@@ -78,3 +80,7 @@ For depth input, place the model files in the directory specified by `model.dept
 ```
 
 Tests skip hardware and model checks when the required GPU or checkpoints are unavailable. Set `BIREFNET_OLD` to a checkout of `750d7d9` to enable comparisons with the earlier implementation.
+
+## Code layout
+
+`src/run.py` assembles training from the schema in `src/config.py`. Data pairing, splitting, and augmentation live in `src/data/`; shared image fitting lives in `src/prepare.py`. `src/model/` preserves the pretrained architecture and checkpoint keys. `src/train/` owns losses, EMA, optimizer steps, and training checkpoints. Both validation and the evaluation CLI use `src/evaluate.py`, which calls the whole-image and tiled inference in `src/predict.py`.

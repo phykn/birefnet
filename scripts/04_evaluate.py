@@ -8,7 +8,7 @@ from src.config import resolve
 from src.data.io import pairs
 from src.device import pick_device
 from src.model.checkpoint import load
-from src.train.metrics import evaluate
+from src.evaluate import evaluate
 
 
 def main():

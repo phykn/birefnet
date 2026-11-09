@@ -1,7 +1,6 @@
 import random
 import uuid
 from datetime import datetime
-from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -27,7 +26,7 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
     if resume is not None:
         if config is not None:
             raise ValueError("--config cannot be combined with --resume")
-        resume = Path(resume).resolve()
+        resume = resolve(resume).resolve()
         if resume.parent.name != "weights":
             raise ValueError("Resume must be inside run weights directory")
         target = resume.parent.parent
@@ -67,7 +66,7 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
         optimizer, cfg.train.steps, cfg.train.min_lr, cfg.train.warmup
     )
     if target is None:
-        target = Path(runs) / (
+        target = resolve(runs) / (
             datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
         )
         target.mkdir(parents=True)
@@ -78,12 +77,12 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
         loader,
         groups["valid"],
         TrainLoss(
-            cfg.loss.ce,
-            cfg.loss.dice,
-            cfg.loss.boundary,
-            cfg.loss.boundary_width,
-            cfg.loss.aux,
-            cfg.model.classes,
+            lambda_cls=cfg.loss.ce,
+            lambda_region=cfg.loss.dice,
+            lambda_boundary=cfg.loss.boundary,
+            boundary_radius=cfg.loss.boundary_width,
+            lambda_aux=cfg.loss.aux,
+            num_classes=cfg.model.classes,
             label_blur=cfg.loss.label_blur,
         ),
         optimizer,
@@ -93,8 +92,10 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
     )
     if resume is not None:
         trainer.load_resume(resume)
+    stats = model.stats
     print(
-        f"train={len(groups['train'])}, valid={len(groups['valid'])}, trainable={model.stats['trainable'] / model.stats['total']:.2%}"
+        f"train={len(groups['train'])}, valid={len(groups['valid'])}, "
+        f"trainable={stats['trainable'] / stats['total']:.2%}"
     )
     trainer.train(cfg.train.steps, cfg.train.val_every, cfg.train.save_every)
     print(f"Training finished: {target}")

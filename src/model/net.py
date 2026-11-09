@@ -18,7 +18,7 @@ class Output:
 class BiRefNet(nn.Module):
     def __init__(
         self,
-        channels: list[int] = [1536, 768, 384, 192],
+        channels: list[int] | tuple[int, ...] = (1536, 768, 384, 192),
         num_classes: int = 4,
         depth: Depth | None = None,
         auxiliary: bool = False,

@@ -8,9 +8,9 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from ..device import amp_enabled, autocast, autocast_dtype
+from ..evaluate import evaluate
 from .checkpoint import CheckpointStore
 from .ema import EMA
-from .metrics import evaluate
 
 
 class Trainer:
@@ -42,7 +42,7 @@ class Trainer:
 
         self.device = next(model.parameters()).device
         self.global_step = 0
-        self.best_region = float("-inf")
+        self.best_miou = float("-inf")
 
         self.use_amp = amp_enabled(self.device)
         self.amp_dtype = autocast_dtype(self.device)
@@ -65,10 +65,10 @@ class Trainer:
         }
 
     def save(self) -> None:
-        self.checkpoints.save(self.global_step, self.best_region, self.metrics)
+        self.checkpoints.save(self.global_step, self.best_miou, self.metrics)
 
     def load_resume(self, path: str) -> None:
-        self.global_step, self.best_region = self.checkpoints.load_resume(path)
+        self.global_step, self.best_miou = self.checkpoints.load_resume(path)
         self._train_iter = None
 
     def next_batch(self) -> dict[str, torch.Tensor]:
@@ -156,8 +156,8 @@ class Trainer:
             for key, value in valid_metrics.items():
                 self._writer.add_scalar(f"valid/{key}", value, self.global_step)
             score = valid_metrics["miou"]
-            if score > self.best_region:
-                self.best_region = score
+            if score > self.best_miou:
+                self.best_miou = score
                 self.checkpoints.save_best(valid_metrics, self.global_step)
 
     def train(

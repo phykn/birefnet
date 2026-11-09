@@ -9,24 +9,25 @@ from ..model.checkpoint import pack_model, read_checkpoint, load_trained, traine
 
 class CheckpointStore:
     def __init__(self, model, optimizer, scheduler, scaler, ema, save_dir, cfg):
-        self.model, self.optimizer, self.scheduler = model, optimizer, scheduler
-        self.scaler, self.ema, self.root, self.cfg = (
-            scaler,
-            ema,
-            Path(save_dir) / "weights",
-            cfg,
-        )
+        self.model = model
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.scaler = scaler
+        self.ema = ema
+        self.root = Path(save_dir) / "weights"
+        self.cfg = cfg
 
     def save(self, step, best, metrics):
         payload = pack_model(self.model, self.cfg, step, metrics)
+        ema = self.ema.state_dict()
         averaged = dict(payload)
-        averaged["model"] = {**payload["model"], **trained_state(self.ema.state_dict())}
+        averaged["model"] = {**payload["model"], **trained_state(ema)}
         atomic_torch_save(averaged, self.root / "last.pth")
         payload.update(
             optimizer=self.optimizer.state_dict(),
             scheduler=self.scheduler.state_dict(),
             scaler=self.scaler.state_dict(),
-            ema=self.ema.state_dict(),
+            ema=ema,
             best=best,
         )
         atomic_torch_save(payload, self.root / "last.train.pth")

@@ -2,7 +2,7 @@ from dataclasses import asdict
 import numpy as np
 import pytest
 from PIL import Image
-from src.config import Config, parse, load_config, resolve
+from src.config import Config, parse, load_config, read_config, resolve, save_config
 from src.data.io import pairs, read_pair, read_image
 from src.data.dataset import MaskDataset
 from src.data import split
@@ -40,6 +40,17 @@ def test_override(tmp_path):
     expected["train"]["crop"] = 512
     assert asdict(cfg) == expected
     assert resolve("weight/a").is_absolute()
+
+
+@pytest.mark.parametrize("reader", [load_config, read_config])
+def test_config_paths_use_project_root(tmp_path, monkeypatch, reader):
+    root = tmp_path / "project"
+    root.mkdir()
+    save_config(Config(), root / "config.yaml")
+    (root / "override.yaml").write_text("train:\n  crop: 64\n")
+    monkeypatch.setattr("src.config.ROOT", root)
+    monkeypatch.chdir(tmp_path)
+    assert reader("override.yaml").train.crop == 64
 
 
 def test_io(tmp_path):
