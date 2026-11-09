@@ -5,6 +5,7 @@ from pathlib import Path
 from .io import Pair
 
 NAMES = ("train", "valid")
+HEADERS = (["image", "mask"], ["image", "mask", "label"])
 Splits = dict[str, list[Pair]]
 
 
@@ -15,15 +16,16 @@ def load(run_dir: str | Path) -> Splits:
         path = root / f"{name}.csv"
         with path.open(newline="", encoding="utf-8") as file:
             reader = csv.reader(file)
-            if next(reader, None) != ["image", "mask"]:
+            header = next(reader, None)
+            if header not in HEADERS:
                 raise RuntimeError(f"Invalid split file: {path}")
             pairs = []
             for row in reader:
                 if not row:
                     continue
-                if len(row) != 2 or not all(row):
+                if len(row) != len(header) or not all(row):
                     raise RuntimeError(f"Invalid split row: {path}:{reader.line_num}")
-                pairs.append((row[0], row[1]))
+                pairs.append(tuple(row))
         if not pairs:
             raise RuntimeError(f"Split file is empty: {path}")
         splits[name] = pairs
@@ -36,10 +38,8 @@ def save(splits: Splits, run_dir: str | Path) -> None:
         pairs = splits[name]
         with (root / f"{name}.csv").open("w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
-            writer.writerow(["image", "mask"])
-            writer.writerows(
-                (Path(image).name, Path(mask).name) for image, mask in pairs
-            )
+            writer.writerow(HEADERS[len(pairs[0]) - 2])
+            writer.writerows(tuple(Path(p).name for p in pair) for pair in pairs)
 
 
 def make(pairs: list[Pair], valid_ratio: float, seed: int = 0) -> Splits:
@@ -57,9 +57,14 @@ def make(pairs: list[Pair], valid_ratio: float, seed: int = 0) -> Splits:
 
 
 def restore(pairs: list[Pair], splits: Splits) -> Splits:
-    available = {
-        (Path(image).name, Path(mask).name): (image, mask) for image, mask in pairs
+    available = {tuple(Path(p).name for p in pair): pair for pair in pairs}
+    widths = {len(key) for key in available} | {
+        len(pair) for saved in splits.values() for pair in saved
     }
+    if len(widths) > 1:
+        raise RuntimeError(
+            "Saved split and data.label_dir disagree on whether labels are used"
+        )
     used: list[Pair] = []
     groups: Splits = {}
     for name in NAMES:
@@ -68,7 +73,7 @@ def restore(pairs: list[Pair], splits: Splits) -> Splits:
             raise RuntimeError(f"Saved split is incomplete: {name}")
         if not saved:
             raise RuntimeError(f"Saved split is empty: {name}")
-        keys = [(Path(image).name, Path(mask).name) for image, mask in saved]
+        keys = [tuple(Path(p).name for p in pair) for pair in saved]
         missing = [key for key in keys if key not in available]
         if missing:
             raise RuntimeError(f"Saved split files are missing: {missing[:5]}")

@@ -29,6 +29,15 @@ def overlay(image: np.ndarray, colors: np.ndarray) -> np.ndarray:
     return np.rint(image.astype(np.float32) * 0.55 + colors * 0.45).astype(np.uint8)
 
 
+def label_overlay(image: np.ndarray, label: np.ndarray, num_classes: int) -> np.ndarray:
+    """Paint brush strokes over the image; unpainted pixels keep the image."""
+    painted = label != 255
+    base = image if image.ndim == 3 else np.repeat(image[..., None], 3, axis=2)
+    result = base.copy()
+    result[painted] = colorize(label, num_classes, painted)[painted]
+    return result
+
+
 def figure(rows: list[list[np.ndarray]]):
     """Lay out one row of panels per sample."""
     if not rows:

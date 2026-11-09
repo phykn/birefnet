@@ -18,6 +18,7 @@ class Model:
 class Data:
     image_dir: str = "data/train/image"
     mask_dir: str = "data/train/mask"
+    label_dir: str = ""
     valid_ratio: float = 0.1
 
 
@@ -65,6 +66,10 @@ class Loss:
     label_blur: float = 0.0
     teacher: float = 0.0
     teacher_start: int = 1000
+    label_weight: float = 1.0
+    mask_weight: float = 0.3
+    label_smooth: float = 0.05
+    mask_edge: int = 0
 
 
 @dataclass
@@ -137,6 +142,11 @@ def parse(values, ignore_unknown=False):
         "loss.teacher_start": cfg.loss.teacher_start >= 1,
         "loss.ce": cfg.loss.ce >= 0,
         "loss.dice": cfg.loss.dice >= 0 and cfg.loss.ce + cfg.loss.dice > 0,
+        "loss.label_weight": cfg.loss.label_weight >= 0,
+        "loss.mask_weight": cfg.loss.mask_weight >= 0
+        and cfg.loss.label_weight + cfg.loss.mask_weight > 0,
+        "loss.label_smooth": 0 <= cfg.loss.label_smooth < 0.5,
+        "loss.mask_edge": 0 <= cfg.loss.mask_edge <= 16,
         "augment.hide_edges": 0 <= a.hide_edges <= 1,
         "augment.brightness": 0 <= a.brightness <= 1,
         "augment.contrast": 0 <= a.contrast < 1,

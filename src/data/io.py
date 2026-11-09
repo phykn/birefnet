@@ -40,7 +40,8 @@ def read_mask(path: str) -> np.ndarray:
         return np.asarray(image, dtype=np.int64)
 
 
-Pair = tuple[str, str]
+Pair = tuple[str, ...]
+FOLDERS = ("images", "masks", "labels")
 
 
 def index(paths: list[str]) -> dict[str, str]:
@@ -53,33 +54,50 @@ def index(paths: list[str]) -> dict[str, str]:
     return result
 
 
-def pair_files(image_paths: list[str], mask_paths: list[str]) -> list[Pair]:
-    images = index(image_paths)
-    masks = index(mask_paths)
-    missing_masks = sorted(set(images) - set(masks))
-    missing_images = sorted(set(masks) - set(images))
-    if missing_masks or missing_images:
-        raise ValueError(
-            "Image/mask stems do not match: "
-            f"missing_masks={missing_masks[:5]}, missing_images={missing_images[:5]}"
-        )
-    return [(images[key], masks[key]) for key in sorted(images)]
+def pair_files(*path_lists: list[str]) -> list[Pair]:
+    """Match image, mask and optional label files by filename stem."""
+    folders = [index(paths) for paths in path_lists]
+    stems = set().union(*folders)
+    missing = {
+        f"missing_{name}": sorted(stems - set(folder))[:5]
+        for name, folder in zip(FOLDERS, folders)
+        if stems - set(folder)
+    }
+    if missing:
+        detail = ", ".join(f"{key}={value}" for key, value in missing.items())
+        raise ValueError(f"File stems do not match: {detail}")
+    return [tuple(folder[stem] for folder in folders) for stem in sorted(stems)]
 
 
-def pairs(images, masks):
+def pairs(images, masks, labels=None):
+    folders = [images, masks] + ([labels] if labels else [])
     return pair_files(
-        [str(p) for p in Path(images).iterdir() if p.is_file()],
-        [str(p) for p in Path(masks).iterdir() if p.is_file()],
+        *([str(p) for p in Path(folder).iterdir() if p.is_file()] for folder in folders)
     )
+
+
+def check_classes(values, path, classes, shape):
+    invalid = (values != 255) & ((values < 0) | (values >= classes))
+    if invalid.any():
+        raise ValueError(
+            f"{path}: invalid class indices {np.unique(values[invalid]).tolist()}"
+        )
+    if values.shape != shape:
+        raise ValueError(f"{path} {values.shape} != image {shape}")
 
 
 def read_pair(image_path, mask_path, classes):
     image, mask = read_image(image_path), read_mask(mask_path)
-    invalid = (mask != 255) & ((mask < 0) | (mask >= classes))
-    if invalid.any():
-        raise ValueError(
-            f"{mask_path}: invalid class indices {np.unique(mask[invalid]).tolist()}"
-        )
-    if image.shape[:2] != mask.shape:
-        raise ValueError(f"{image_path} {image.shape} != {mask_path} {mask.shape}")
+    check_classes(mask, mask_path, classes, image.shape[:2])
     return image, mask
+
+
+def read_sample(paths: Pair, classes):
+    """Read an image with its mask and, when present, its label; 255 in a label means unpainted."""
+    image, mask = read_pair(paths[0], paths[1], classes)
+    sample = [image, mask]
+    for path in paths[2:]:
+        label = read_mask(path)
+        check_classes(label, path, classes, image.shape[:2])
+        sample.append(label)
+    return sample

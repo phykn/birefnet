@@ -16,6 +16,7 @@ Thumbs.db
 # Training data and outputs
 data/train/
 data/test/
+data/synthetic/
 local_data/
 weight/
 run/

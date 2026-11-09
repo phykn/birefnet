@@ -17,25 +17,41 @@ def _flip(x: np.ndarray, turns: int, mirror: bool) -> np.ndarray:
     return np.ascontiguousarray(x)
 
 
+def pick_focus(label: np.ndarray) -> tuple[int, int] | None:
+    """Pick a painted label pixel, choosing its class first so rare classes get crops too."""
+    painted = np.unique(label[label != 255])
+    if painted.size == 0:
+        return None
+    ys, xs = np.nonzero(label == random.choice(painted.tolist()))
+    pick = random.randrange(len(ys))
+    return int(ys[pick]), int(xs[pick])
+
+
 def zoom(
-    image: np.ndarray,
-    mask: np.ndarray,
+    shape: tuple[int, int],
     limits: tuple[float, float],
     crop: int = 1024,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    focus: tuple[int, int] | None = None,
+) -> tuple[tuple[slice, slice], np.ndarray, int]:
     """Pick a square window as if the image were taken at another magnification.
 
     Returns the window, its cut edges, and the window side in source pixels; the
     caller resizes that side to the model input, so zooming out leaves padding.
+    The window contains ``focus`` when one is given.
     """
-    height, width = image.shape[:2]
+    height, width = shape
     low, high = limits
     scale = float(np.exp(random.uniform(np.log(low), np.log(high))))
     side = max(1, round(max(height, width) / scale * crop / 1024))
     crop_h = min(side, height)
     crop_w = min(side, width)
-    top = random.randint(0, height - crop_h)
-    left = random.randint(0, width - crop_w)
+    if focus is None:
+        top = random.randint(0, height - crop_h)
+        left = random.randint(0, width - crop_w)
+    else:
+        y, x = focus
+        top = random.randint(max(0, y - crop_h + 1), min(y, height - crop_h))
+        left = random.randint(max(0, x - crop_w + 1), min(x, width - crop_w))
     bottom, right = top + crop_h, left + crop_w
     cut = np.zeros((crop_h, crop_w), dtype=np.uint8)
     if top > 0:
@@ -46,12 +62,7 @@ def zoom(
         cut[:, 0] = 1
     if right < width:
         cut[:, -1] = 1
-    return (
-        image[top:bottom, left:right].copy(),
-        mask[top:bottom, left:right].copy(),
-        cut,
-        side,
-    )
+    return np.s_[top:bottom, left:right], cut, side
 
 
 def jitter(image: np.ndarray, limits: tuple[float, float]) -> np.ndarray:
@@ -105,12 +116,14 @@ def noise(image: np.ndarray, strength: float) -> np.ndarray:
 def edge_mask(
     image: np.ndarray,
     mask: np.ndarray,
+    *others: np.ndarray,
     ignore_index: int = 255,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, ...]:
+    """Hide image edges like a stage or info bar; ``others`` (labels) are hidden with the mask."""
     roi = mask != ignore_index
     count = np.count_nonzero(roi)
     if count == 0:
-        return image, mask
+        return image, mask, *others
     height, width = mask.shape
     # A bounded retry also handles sparse ROIs at the image border.
     for _ in range(32):
@@ -125,5 +138,6 @@ def edge_mask(
         image, mask = image.copy(), mask.copy()
         image[hidden] = value
         mask[hidden] = ignore_index
-        return image, mask
-    return image, mask
+        others = tuple(np.where(hidden, ignore_index, other) for other in others)
+        return image, mask, *others
+    return image, mask, *others

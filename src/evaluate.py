@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-from .data.io import read_pair
+from .data.io import read_sample
 from .predict import predict_logits
 
 
@@ -38,14 +38,22 @@ def scores(confusion):
 
 
 def evaluate(model, pairs, tiles=(1,)):
-    matrix = torch.zeros(model.num_classes, model.num_classes, dtype=torch.int64)
+    """Score image/mask pairs; image/mask/label triples score each image once against both."""
     if not pairs:
         raise ValueError("Evaluation needs at least one pair")
+    classes = model.num_classes
+    names = ["mask", "label"][: len(pairs[0]) - 1]
+    matrices = [torch.zeros(classes, classes, dtype=torch.int64) for _ in names]
     model.eval()
-    for image_path, mask_path in tqdm(pairs, desc="Evaluating", leave=False):
-        image, mask = read_pair(image_path, mask_path, model.num_classes)
-        pred = predict_logits(model, image, tiles=tiles).argmax(0)
-        matrix += confusion_matrix(
-            torch.from_numpy(pred), torch.from_numpy(mask), model.num_classes
-        )
-    return scores(matrix)
+    for paths in tqdm(pairs, desc="Evaluating", leave=False):
+        image, *targets = read_sample(paths, classes)
+        pred = torch.from_numpy(predict_logits(model, image, tiles=tiles).argmax(0))
+        for matrix, target in zip(matrices, targets):
+            matrix += confusion_matrix(pred, torch.from_numpy(target), classes)
+    if len(names) == 1:
+        return scores(matrices[0])
+    return {
+        f"{name}_{key}": value
+        for name, matrix in zip(names, matrices)
+        for key, value in scores(matrix).items()
+    }

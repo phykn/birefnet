@@ -1,3 +1,4 @@
+import argparse
 import random
 import sys
 from pathlib import Path
@@ -7,19 +8,25 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts._draw import colorize, figure, overlay
+from scripts._draw import colorize, figure, label_overlay, overlay
 from src.config import load_config, resolve
-from src.data.io import read_pair, pairs as get_pairs
+from src.data.io import pairs as get_pairs, read_sample
 
 
 def main() -> None:
-    cfg = load_config()
-    pairs = get_pairs(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir))
+    parser = argparse.ArgumentParser(description="Show source images with masks and labels")
+    parser.add_argument("--config")
+    cfg = load_config(parser.parse_args().config)
+    labels = resolve(cfg.data.label_dir) if cfg.data.label_dir else None
+    pairs = get_pairs(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir), labels)
     rows = []
-    for image_path, mask_path in random.sample(pairs, 2):
-        image, mask = read_pair(image_path, mask_path, cfg.model.classes)
+    for pair in random.sample(pairs, 2):
+        image, mask, *label = read_sample(pair, cfg.model.classes)
         colors = colorize(mask, cfg.model.classes, mask != 255)
-        rows.append([image, colors, overlay(image, colors)])
+        row = [image, colors, overlay(image, colors)]
+        if label:
+            row.append(label_overlay(image, label[0], cfg.model.classes))
+        rows.append(row)
     figure(rows)
     plt.show()
 

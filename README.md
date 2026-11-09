@@ -59,6 +59,75 @@ Each run saves its resolved config, training and validation split, TensorBoard l
 
 Use a filename from your dataset in the prediction command. The preview shows the predicted class map and overlay. Add `--mask PATH` to compare a ground-truth mask or `--class-id 1` to see a class probability map. Evaluation reports mean IoU, per-class IoU, and pixel accuracy. Both commands accept `--device cpu` to select the CPU explicitly.
 
+## Train with brush labels and AI masks
+
+Use this mode when people painted only small parts of each image and an AI filled in a full mask from those strokes. Training trusts the painted pixels strongly and the AI mask weakly, and treats both as possibly wrong. Every image needs all three files, matched by filename stem. Both `mask/` and `label/` hold class IDs; `255` in `label/` means unpainted.
+
+```text
+DATA/image/0001.png
+DATA/mask/0001.png    # AI mask, every pixel filled
+DATA/label/0001.png   # brush strokes, 255 elsewhere
+```
+
+| Config key | Default | Meaning |
+| --- | --- | --- |
+| `data.label_dir` | `""` | Folder of brush labels. Empty turns this mode off. |
+| `loss.label_weight` | `1.0` | Weight of cross-entropy on painted pixels, averaged over painted pixels only |
+| `loss.mask_weight` | `0.3` | Weight of cross-entropy and Dice on the AI mask, away from painted pixels |
+| `loss.label_smooth` | `0.05` | Label smoothing on painted pixels, so one wrong stroke cannot force full confidence |
+| `loss.mask_edge` | `0` | Ignore AI-mask pixels within this many source pixels of a class boundary |
+
+Validation then reports `label_miou` on painted pixels and `mask_miou` against the AI mask; `best_miou.pth` is chosen by `label_miou`. Painted pixels usually sit where the AI mask is already right, so `label_miou` checks that trusted pixels are kept, not how well mask errors were fixed.
+
+### Choose settings on synthetic data
+
+Synthetic samples come with the true answer in `truth/`, so they can show which settings fix mask errors. The error rates and sizes are constants at the top of `src/data/synthetic.py`; adjust them to resemble your real AI masks and strokes.
+
+```bash
+.venv/bin/python scripts/00_synthetic.py   # data/synthetic/{train,test}/{image,mask,label,truth}
+.venv/bin/python scripts/02_augment.py --config experiments/syn_trial.yaml
+.venv/bin/python run_train.py --config experiments/syn_trial.yaml
+```
+
+`experiments/syn_trial.yaml` is a local 20-step config with `model.classes: 5`, the three `data/synthetic/train` folders, and `train.warmup: 0`. Score a run three ways by changing `--masks`:
+
+```bash
+for target in truth label mask; do
+  .venv/bin/python scripts/04_evaluate.py \
+    --weight run/RUN_ID/weights/best_miou.pth \
+    --images data/synthetic/test/image --masks data/synthetic/test/$target
+done
+```
+
+### Train on your own data
+
+Create two override configs with your folders and class count. Train both with the same number of steps, then compare the best `valid/label_miou` in TensorBoard. The labeled run should not score lower than the mask-only run.
+
+```yaml
+# labeled.yaml
+model:
+  classes: 5
+data:
+  image_dir: DATA/image
+  mask_dir: DATA/mask
+  label_dir: DATA/label
+```
+
+```yaml
+# mask_only.yaml: same data, learns from the AI mask alone
+model:
+  classes: 5
+data:
+  image_dir: DATA/image
+  mask_dir: DATA/mask
+  label_dir: DATA/label
+loss:
+  label_weight: 0.0
+  mask_weight: 1.0
+  mask_edge: 0
+  teacher: 0.0
+```
+
 ## Optional training features
 
 The default recipe uses cross-entropy, Dice loss, and EMA weights. The following features are off by default. To try one, set its key to the example value in your config.

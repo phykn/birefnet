@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from .config import ROOT, load_config, read_config, save_config, resolve
-from .data.io import pairs, read_pair
+from .data.io import pairs, read_sample
 from .data.dataset import MaskDataset
 from .data import split
 from .device import pick_device
@@ -34,7 +34,10 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
     else:
         cfg = load_config(config)
     seed(cfg.train.seed)
-    available = pairs(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir))
+    labels = resolve(cfg.data.label_dir) if cfg.data.label_dir else None
+    available = pairs(
+        resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir), labels
+    )
     if len(available) < 2:
         raise ValueError("At least two pairs required")
     groups = (
@@ -44,8 +47,12 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
     )
     if len(groups["train"]) < cfg.loader.batch_size:
         raise ValueError("loader.batch_size exceeds training pairs")
+    unpainted = 0
     for pair in available:
-        read_pair(*pair, cfg.model.classes)
+        sample = read_sample(pair, cfg.model.classes)
+        unpainted += len(sample) == 3 and bool((sample[2] == 255).all())
+    if labels:
+        print(f"images without label pixels: {unpainted}")
     device = device or pick_device()
     loader = DataLoader(
         MaskDataset(groups["train"], cfg),
@@ -84,6 +91,9 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
             lambda_aux=cfg.loss.aux,
             num_classes=cfg.model.classes,
             label_blur=cfg.loss.label_blur,
+            label_weight=cfg.loss.label_weight,
+            mask_weight=cfg.loss.mask_weight,
+            label_smooth=cfg.loss.label_smooth,
         ),
         optimizer,
         scheduler,

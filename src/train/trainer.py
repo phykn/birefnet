@@ -155,7 +155,7 @@ class Trainer:
             self.metrics = valid_metrics
             for key, value in valid_metrics.items():
                 self._writer.add_scalar(f"valid/{key}", value, self.global_step)
-            score = valid_metrics["miou"]
+            score = valid_metrics.get("label_miou", valid_metrics.get("miou"))
             if score > self.best_miou:
                 self.best_miou = score
                 self.checkpoints.save_best(valid_metrics, self.global_step)

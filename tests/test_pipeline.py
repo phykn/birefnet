@@ -246,3 +246,47 @@ def test_skipped_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(t, "step", lambda: ({"loss": 1.0}, False))
     with pytest.raises(FloatingPointError, match="16 consecutive"):
         t.train(1)
+
+
+@pytest.mark.skipif(
+    not (ROOT / "weight/BiRefNet-general-epoch_244.pth").exists(),
+    reason="base unavailable",
+)
+def test_real_train_with_labels(tmp_path):
+    from PIL import Image
+    from src.run import train
+
+    data = tmp_path / "data"
+    write(data)
+    (data / "label").mkdir()
+    for mask_path in (data / "mask").iterdir():
+        mask = np.asarray(Image.open(mask_path))
+        label = np.full(mask.shape, 255, np.uint8)
+        label[100:110, 100:140] = mask[100:110, 100:140]
+        Image.fromarray(label).save(data / "label" / mask_path.name)
+    cfg = Config()
+    cfg.data.image_dir = str(data / "image")
+    cfg.data.mask_dir = str(data / "mask")
+    cfg.data.label_dir = str(data / "label")
+    cfg.loss.mask_edge = 2
+    cfg.train.steps = 2
+    cfg.train.warmup = 0
+    cfg.train.accum = 1
+    cfg.train.crop = 64
+    cfg.train.val_every = 2
+    cfg.train.save_every = 2
+    cfg.loader.batch_size = 1
+    cfg.loader.num_workers = 0
+    path = tmp_path / "cfg.yaml"
+    save_config(cfg, path)
+    target = train(config=path, runs=tmp_path / "run", device=torch.device("cpu"))
+    assert (target / "train.csv").read_text().startswith("image,mask,label")
+    log = EventAccumulator(str(target / "logs")).Reload()
+    tags = set(log.Tags()["scalars"])
+    assert {"train/label_ce", "train/ce", "train/dice"} <= tags
+    for name in ("label", "mask"):
+        assert {f"valid/{name}_miou", f"valid/{name}_pixel_accuracy"} <= tags
+        assert {f"valid/{name}_class_{i}_iou" for i in range(4)} <= tags
+    assert "valid/miou" not in tags
+    metrics = read_checkpoint(target / "weights/best_miou.pth")["metrics"]
+    assert "label_miou" in metrics and "mask_miou" in metrics

@@ -174,8 +174,14 @@ class TrainLoss(nn.Module):
         num_classes=4,
         ignore_index=255,
         label_blur=0.0,
+        label_weight=1.0,
+        mask_weight=1.0,
+        label_smooth=0.0,
     ):
         super().__init__()
+        self.label_weight = label_weight
+        self.mask_weight = mask_weight
+        self.label_smooth = label_smooth
         self.seg = SegmentationLoss(
             lambda_cls,
             lambda_region,
@@ -207,6 +213,30 @@ class TrainLoss(nn.Module):
                 totals[key] = totals.get(key, value * 0.0) + value * scale
         totals["seg"] = totals["cls"] + totals["region"] + totals["boundary"]
         return totals
+
+    def _label(self, logits, label):
+        """Smoothed CE on painted label pixels.
+
+        The divisor never drops below 0.5% of the output pixels, so a crop holding a few
+        painted pixels cannot let one wrong stroke dominate the step.
+        """
+        total = logits[0].new_zeros((), dtype=torch.float32)
+        for pred in logits:
+            pred = pred.float()
+            classes = pred.shape[1]
+            target = F.interpolate(
+                label[:, None].float(), pred.shape[-2:], mode="nearest"
+            )[:, 0].long()
+            painted = target != self.ignore_index
+            if ((target[painted] < 0) | (target[painted] >= classes)).any():
+                raise ValueError("label contains invalid class indices")
+            onehot = F.one_hot(target.masked_fill(~painted, 0), classes)
+            soft = onehot.permute(0, 3, 1, 2).float() * (1 - self.label_smooth)
+            soft = soft + self.label_smooth / classes
+            ce = -(soft * pred.log_softmax(1)).sum(1)
+            floor = 0.005 * target.numel()
+            total = total + (ce * painted).sum() / max(float(painted.sum()), floor)
+        return total / len(logits)
 
     @staticmethod
     def _guide(gdt, valid):
@@ -241,6 +271,10 @@ class TrainLoss(nn.Module):
             "valid", torch.ones_like(target[:, None], dtype=torch.float32)
         )
         valid = valid * (target[:, None] != self.ignore_index)
+        label = batch.get("label")
+        if label is not None:
+            # The mask term stays off where a person painted.
+            valid = valid * (label[:, None] == self.ignore_index)
         cut = batch.get("cut", torch.zeros_like(valid))
         size = target.shape[0]
         count = out.logits[-1].shape[0]
@@ -260,7 +294,13 @@ class TrainLoss(nn.Module):
             else parts["seg"] * 0.0
         )
         aux = self.lambda_aux * aux_raw
-        loss = parts["seg"] + aux
+        if label is None:
+            loss = parts["seg"] + aux
+        else:
+            label_ce = self._label(out.logits, label)
+            mask_term = self.mask_weight * (parts["cls"] + parts["region"])
+            loss = self.label_weight * label_ce + mask_term + parts["boundary"] + aux
+            parts["label_ce"] = label_ce
         parts.update(
             loss=loss,
             aux_raw=aux_raw,

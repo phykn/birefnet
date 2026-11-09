@@ -6,6 +6,7 @@ model:
 data:
   image_dir: data/train/image
   mask_dir: data/train/mask
+  label_dir: ""
   valid_ratio: 0.1
 augment:
   zoom:
@@ -45,3 +46,7 @@ loss:
   label_blur: 0.0
   teacher: 0.0
   teacher_start: 1000
+  label_weight: 1.0
+  mask_weight: 0.3
+  label_smooth: 0.05
+  mask_edge: 0
