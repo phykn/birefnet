@@ -73,9 +73,11 @@ DATA/label/0001.png   # brush strokes, 255 elsewhere
 | --- | --- | --- |
 | `data.label_dir` | `""` | Folder of brush labels. Empty turns this mode off. |
 | `loss.label_weight` | `1.0` | Weight of cross-entropy on painted pixels, averaged over painted pixels only |
-| `loss.mask_weight` | `0.3` | Weight of cross-entropy and Dice on the AI mask, away from painted pixels |
+| `loss.mask_weight` | `3.0` | Weight of cross-entropy and Dice on the AI mask, away from painted pixels |
 | `loss.label_smooth` | `0.05` | Label smoothing on painted pixels, so one wrong stroke cannot force full confidence |
-| `loss.mask_edge` | `0` | Ignore AI-mask pixels within this many source pixels of a class boundary |
+| `loss.mask_edge` | `4` | Ignore AI-mask pixels within this many source pixels of a class boundary |
+
+The defaults scored best against the true answer on synthetic data: `mask_edge: 4` beat no edge rule and the EMA teacher, and `mask_weight: 3.0` beat 0.3 and 1.0. The label term is averaged over painted pixels only, so each painted pixel still counts for far more than each mask pixel. If your AI masks are less accurate than the synthetic ones, raise the error rates in `src/data/synthetic.py` and compare weights again.
 
 Validation then reports `label_miou` on painted pixels and `mask_miou` against the AI mask; `best_miou.pth` is chosen by `label_miou`. Painted pixels usually sit where the AI mask is already right, so `label_miou` checks that trusted pixels are kept, not how well mask errors were fixed.
 
@@ -111,6 +113,9 @@ data:
   image_dir: DATA/image
   mask_dir: DATA/mask
   label_dir: DATA/label
+loss:
+  mask_weight: 3.0
+  mask_edge: 4
 ```
 
 ```yaml

@@ -273,7 +273,7 @@ class TrainLoss(nn.Module):
         valid = valid * (target[:, None] != self.ignore_index)
         label = batch.get("label")
         if label is not None:
-            # The mask term stays off where a person painted.
+            # The AI mask copies painted strokes, so counting them here would weigh them twice.
             valid = valid * (label[:, None] == self.ignore_index)
         cut = batch.get("cut", torch.zeros_like(valid))
         size = target.shape[0]

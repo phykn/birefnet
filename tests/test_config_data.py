@@ -180,6 +180,7 @@ def test_label_crop_and_shared_transforms(tmp_path):
     cfg = Config()
     cfg.model.classes = 4
     cfg.augment.hide_edges = 0.5
+    cfg.loss.mask_edge = 0
     for seed in range(10):
         random.seed(seed)
         np.random.seed(seed)

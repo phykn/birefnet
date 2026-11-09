@@ -67,9 +67,9 @@ class Loss:
     teacher: float = 0.0
     teacher_start: int = 1000
     label_weight: float = 1.0
-    mask_weight: float = 0.3
+    mask_weight: float = 3.0
     label_smooth: float = 0.05
-    mask_edge: int = 0
+    mask_edge: int = 4
 
 
 @dataclass
