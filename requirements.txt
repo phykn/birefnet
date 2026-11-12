@@ -1,6 +1,5 @@
 torch>=2.10.0
 torchvision
-timm
 einops
 numpy
 opencv-python-headless
@@ -12,4 +11,3 @@ matplotlib
 pytest
 pyyaml
 kornia
-transformers

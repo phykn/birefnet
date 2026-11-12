@@ -1,8 +1,6 @@
 model:
   weight: weight/BiRefNet-general-epoch_244.pth
   classes: 4
-  depth: false
-  depth_weight: weight/Depth-Anything-V2-Small-hf
 
 data:
   image_dir: data/train/image
@@ -51,7 +49,7 @@ loss:
   dice: 1.0
   boundary: 0.0
   boundary_width: 3
-  aux: 0.0
+  aux: 1.0
   label_blur: 0.0
   teacher: 0.3
   teacher_start: 1000

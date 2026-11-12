@@ -7,7 +7,7 @@ from .data.io import pair_files
 from .data.dataset import MaskDataset
 from .data import split
 from .device import pick_device
-from .model.checkpoint import SEGMENTATION_HEADS, build
+from .model.checkpoint import SEGMENTATION_HEADS, build_model
 from .train.loss import TrainLoss
 from .train.schedule import cosine_schedule
 from .train.trainer import Trainer
@@ -46,7 +46,7 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
         persistent_workers=cfg.loader.num_workers > 0,
         pin_memory=device.type == "cuda",
     )
-    model = build(cfg).to(device)
+    model = build_model(cfg).to(device)
     if device.type == "mps":
         model.bb.compile(dynamic=False)
     heads, rest = [], []
@@ -84,10 +84,11 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
     )
     if resume is not None:
         trainer.resume(resume)
-    stats = model.stats
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in trainer.trainable)
     print(
         f"train={len(splits['train'])}, valid={len(splits['valid'])}, "
-        f"trainable={stats['trainable'] / stats['total']:.2%}"
+        f"trainable={trainable / total:.2%}"
     )
     trainer.train()
     print(f"Training finished: {run_dir}")

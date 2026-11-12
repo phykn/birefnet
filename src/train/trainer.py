@@ -11,8 +11,7 @@ from ..device import autocast, pick_amp_dtype
 from ..evaluate import evaluate
 from ..model.checkpoint import (
     load_trained,
-    pack_model,
-    read_checkpoint,
+    pack_checkpoint,
     write_checkpoint,
 )
 from .ema import EMA
@@ -39,7 +38,7 @@ class Trainer:
         self.save_dir = Path(save_dir)
         self.cfg = cfg
         self.ema = EMA(model, cfg.train.ema)
-        self.trainable = model.list_trainable()
+        self.trainable = [p for g in optimizer.param_groups for p in g["params"]]
         self.device = next(model.parameters()).device
         self.amp_dtype = pick_amp_dtype(self.device)
         self.scaler = torch.amp.GradScaler(
@@ -101,9 +100,9 @@ class Trainer:
             with autocast(self.device, self.amp_dtype):
                 inputs = batch["image"]
                 if share > 0:
-                    prepared = self.model.prepare(inputs)
-                    out = self.model(inputs, prepared)
-                    teacher = self.predict_teacher(inputs, prepared)
+                    encoded = self.model.encode(inputs)
+                    out = self.model(inputs, encoded)
+                    teacher = self.predict_teacher(inputs, encoded)
                     parts, loss = self.criterion(
                         out, batch, teacher=teacher, teacher_weight=share
                     )
@@ -150,10 +149,10 @@ class Trainer:
         return self.cfg.loss.teacher * min(1.0, max(0.0, progress))
 
     @torch.no_grad()
-    def predict_teacher(self, inputs, prepared):
+    def predict_teacher(self, inputs, encoded):
         self.model.eval()
         out = functional_call(
-            self.model, self.ema.params, (inputs, prepared), strict=False
+            self.model, self.ema.params, (inputs, encoded), strict=False
         )
         self.model.train()
         return out.logits[-1].float().softmax(1)
@@ -166,16 +165,17 @@ class Trainer:
             score = self.metrics.get("label_miou", self.metrics.get("miou"))
             if score > self.best_miou:
                 self.best_miou = score
-                path = self.save_dir / "weights/best_miou.pth"
-                write_checkpoint(self.pack_checkpoint(), path)
-
-    def pack_checkpoint(self):
-        return pack_model(self.model, self.cfg, self.global_step, self.metrics)
+                state = pack_checkpoint(
+                    self.model, self.cfg, self.global_step, self.metrics
+                )
+                write_checkpoint(state, self.save_dir / "weights/best_miou.pth")
 
     def save(self):
-        state = self.pack_checkpoint()
+        args = (self.cfg, self.global_step, self.metrics)
+        state = pack_checkpoint(self.model, *args)
         with self.ema.applied():
-            write_checkpoint(self.pack_checkpoint(), self.save_dir / "weights/last.pth")
+            averaged = pack_checkpoint(self.model, *args)
+        write_checkpoint(averaged, self.save_dir / "weights/last.pth")
         state.update(
             optimizer=self.optimizer.state_dict(),
             scheduler=self.scheduler.state_dict(),
@@ -186,8 +186,8 @@ class Trainer:
         write_checkpoint(state, self.save_dir / "weights/last.train.pth")
 
     def resume(self, path):
-        state = read_checkpoint(path)
-        saved = parse_config(state["config"], ignore_unknown=True)
+        state = torch.load(path, map_location="cpu", weights_only=True)
+        saved = parse_config(state["config"])
         if asdict(saved) != asdict(self.cfg):
             raise ValueError("Resume checkpoint config differs from saved config.yaml")
         load_trained(self.model, state["model"])

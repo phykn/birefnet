@@ -10,8 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 class Model:
     weight: str
     classes: int
-    depth: bool
-    depth_weight: str
 
 
 @dataclass
@@ -109,12 +107,12 @@ class Config:
     loss: Loss
 
 
-def build_config(kind, values, ignore_unknown, prefix=""):
+def build_config(kind, values, prefix=""):
     if not isinstance(values, dict):
         raise ValueError(f"{prefix or 'config'}: expected mapping")
     names = {f.name for f in fields(kind)}
     unknown = [key for key in values if key not in names]
-    if unknown and not ignore_unknown:
+    if unknown:
         path = f"{prefix}.{unknown[0]}" if prefix else unknown[0]
         raise ValueError(f"{path}: unknown key")
     parsed = {}
@@ -124,7 +122,7 @@ def build_config(kind, values, ignore_unknown, prefix=""):
             raise ValueError(f"{path}: missing key")
         value = values[f.name]
         if is_dataclass(f.type):
-            parsed[f.name] = build_config(f.type, value, ignore_unknown, path)
+            parsed[f.name] = build_config(f.type, value, path)
             continue
         valid = type(value) is f.type
         if f.type is float:
@@ -142,10 +140,10 @@ def build_config(kind, values, ignore_unknown, prefix=""):
     return kind(**parsed)
 
 
-def parse_config(values, ignore_unknown=False):
+def parse_config(values):
     base = yaml.safe_load((ROOT / "config.yaml").read_text())
     merge_config(base, values)
-    cfg = build_config(Config, base, ignore_unknown)
+    cfg = build_config(Config, base)
     a, t = cfg.augment, cfg.train
     checks = {
         "model.classes": 2 <= cfg.model.classes <= 255,

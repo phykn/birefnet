@@ -43,7 +43,7 @@ Each run saves its resolved config, training and validation split, TensorBoard l
 .venv/bin/python run_train.py --resume run/RUN_ID/weights/last.train.pth
 ```
 
-`best_miou.pth` holds the EMA weights with the best validation mIoU. Use `last.train.pth` to resume training. Use the earlier implementation to load a v2 checkpoint. [Code at `750d7d9`](https://github.com/phykn/birefnet/tree/750d7d93456d25efeda6b7728b94f0ee1b442829)
+`best_miou.pth` holds the EMA weights with the best validation mIoU. Use `last.train.pth` to resume training.
 
 ## Predict and evaluate
 
@@ -132,16 +132,12 @@ loss:
 
 ## Optional training features
 
-The default recipe uses EMA weights and Dice loss. On the AI mask it uses generalized cross-entropy (`loss.gce_q: 0.7`; `0` is plain cross-entropy), which pulls less on pixels the model confidently disagrees with. From `loss.teacher_start` the mask target also leans toward the EMA model's prediction (`loss.teacher: 0.3`). Painted labels always use plain cross-entropy. The four class heads are new layers, so they train at `train.head_lr_scale: 10.0` times `train.lr`; the rest of the pretrained decoder keeps `train.lr`. The following features are off by default. To try one, set its key to the example value in your config.
+The default recipe uses EMA weights, Dice loss, and BiRefNet's edge-guidance loss (`loss.aux: 1.0`), which trains the decoder's edge branch on image edges that lie on predicted class boundaries. On the AI mask it uses generalized cross-entropy (`loss.gce_q: 0.7`; `0` is plain cross-entropy), which pulls less on pixels the model confidently disagrees with. From `loss.teacher_start` the mask target also leans toward the EMA model's prediction (`loss.teacher: 0.3`). Painted labels always use plain cross-entropy. The four class heads are new layers, so they train at `train.head_lr_scale: 10.0` times `train.lr`; the rest of the pretrained decoder keeps `train.lr`. The following features are off by default. To try one, set its key to the example value in your config.
 
 | Feature | Config key | Example value |
 | --- | --- | --- |
-| Relative depth input | `model.depth` | `true` |
 | Boundary-band loss | `loss.boundary` | `0.5` |
-| Edge-guidance loss | `loss.aux` | `1.0` |
 | Label blur | `loss.label_blur` | `1.0` |
-
-For depth input, place the model files in the directory specified by `model.depth_weight`. The default is `weight/Depth-Anything-V2-Small-hf`. [Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf)
 
 ## Tests
 

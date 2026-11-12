@@ -2,8 +2,9 @@ import numpy as np
 import pytest
 import torch
 
+from src.evaluate import compute_scores, count_confusion
 from src.predict import plan_tiles, predict, weigh_tile
-from tests.train_utils import Tiny
+from tests.helpers import Tiny
 
 
 @pytest.mark.parametrize("shape", [(1, 3), (17, 29), (64, 64)])
@@ -32,3 +33,20 @@ def test_tile_blending_preserves_constant_logits(tiles):
     np.testing.assert_allclose(result["logits"], expected, atol=1e-6, rtol=0)
     np.testing.assert_allclose(result["probs"].sum(axis=0), 1, atol=1e-6)
     assert (result["classes"] == 3).all()
+
+
+def test_tiles_shape_and_batch():
+    m = Tiny().eval()
+    x = np.arange(35 * 47, dtype=np.uint8).reshape(35, 47)
+    for tiles in ((1,), (1, 3)):
+        a = predict(m, x, size=64, tiles=tiles, tile_batch=1)["logits"]
+        b = predict(m, x, size=64, tiles=tiles, tile_batch=3)["logits"]
+        assert a.shape == (4, 35, 47)
+        np.testing.assert_allclose(a, b, atol=1.0e-6, rtol=0)
+
+
+def test_metrics():
+    s = compute_scores(torch.tensor([[4, 1], [2, 3]]))
+    assert s["class_0_iou"] == 4 / 7 and s["class_1_iou"] == 0.5
+    assert s["miou"] == (4 / 7 + 0.5) / 2 and s["pixel_accuracy"] == 0.7
+    assert count_confusion(torch.tensor([0, 1]), torch.tensor([0, 255]), 2).sum() == 1

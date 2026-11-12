@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from src.model import Output
-from tests.train_utils import make_loss
+from tests.helpers import make_loss
 
 
 def test_ce_matches_torch_and_dice_perfect():
@@ -12,10 +12,13 @@ def test_ce_matches_torch_and_dice_perfect():
     parts, _ = make_loss(gce_q=0)(Output([logits]), {"mask": target})
     torch.testing.assert_close(parts["ce"], F.cross_entropy(logits, target))
     assert parts["dice"] < 1e-5
+    torch.manual_seed(0)
     pred = torch.randn(2, 4, 16, 16)
     target = torch.randint(0, 4, (2, 16, 16))
+    target[:, 0] = 255
     parts, _ = make_loss(gce_q=0)(Output([pred]), {"mask": target})
-    torch.testing.assert_close(parts["ce"], F.cross_entropy(pred, target))
+    expected = F.cross_entropy(pred, target, ignore_index=255)
+    torch.testing.assert_close(parts["ce"], expected)
 
 
 def test_gce_pulls_less_on_confidently_wrong_mask_pixels():
@@ -132,3 +135,72 @@ def test_teacher_pulls_targets_toward_its_prediction():
     unchanged = loss(out, batch, teacher=teacher, teacher_weight=0.0)[0]["ce"]
     assert taught < plain
     torch.testing.assert_close(unchanged, plain)
+
+
+def test_band_excludes_ignore_and_crop_edges():
+    pred = torch.zeros(1, 4, 16, 16, requires_grad=True)
+    target = torch.zeros(1, 16, 16, dtype=torch.long)
+    target[:, :, 8:] = 255
+    loss = make_loss(boundary=1)
+    assert loss(Output([pred]), {"mask": target})[0]["boundary"] == 0
+    uniform = torch.full_like(target, 2)
+    assert loss(Output([pred]), {"mask": uniform})[0]["boundary"] == 0
+    target[:, :, 8:] = 1
+    assert loss(Output([pred]), {"mask": target})[0]["boundary"] > 0
+    cut = torch.zeros(1, 1, 16, 16)
+    cut[:, :, :, 7:9] = 1
+    assert loss(Output([pred]), {"mask": target, "cut": cut})[0]["boundary"] == 0
+
+
+def label_ce(logits, mask, label, **loss):
+    batch = {"mask": mask, "label": label}
+    return make_loss(**loss)(Output([logits]), batch)[0]["label_ce"]
+
+
+def test_label_term_does_not_scale_with_unpainted_pixels():
+    torch.manual_seed(0)
+    logits = torch.randn(1, 4, 10, 50)
+    label = torch.full((1, 10, 50), 255)
+    label[0, 5, :10] = 2
+    mask = torch.zeros(1, 10, 50, dtype=torch.long)
+    wide = torch.cat([logits, torch.randn(1, 4, 10, 50)], dim=3)
+    wide_label = torch.cat([label, torch.full_like(label, 255)], dim=2)
+    wide_mask = torch.zeros(1, 10, 100, dtype=torch.long)
+    small = label_ce(logits, mask, label)
+    large = label_ce(wide, wide_mask, wide_label)
+    torch.testing.assert_close(small, large)
+
+
+def test_one_wrong_label_pixel_is_bounded():
+    logits = torch.zeros(1, 4, 10, 100)
+    logits[0, 0, 3, 3] = 5.0
+    label = torch.full((1, 10, 100), 255)
+    label[0, 3, 3] = 1
+    pixel = -torch.log_softmax(logits[0, :, 3, 3], 0)[1]
+    actual = label_ce(logits, torch.zeros_like(label), label, label_smooth=0)
+    torch.testing.assert_close(actual, pixel / 5)
+
+
+def test_mask_is_ignored_on_label_pixels():
+    torch.manual_seed(1)
+    logits = torch.randn(2, 4, 16, 16)
+    mask = torch.randint(0, 4, (2, 16, 16))
+    label = torch.full_like(mask, 255)
+    label[:, 4:8, 4:8] = 3
+    loss = make_loss(mask_weight=0.3)
+    base_parts, base = loss(Output([logits]), {"mask": mask, "label": label})
+    changed = mask.clone()
+    changed[:, 4:8, 4:8] = 0
+    _, other = loss(Output([logits]), {"mask": changed, "label": label})
+    torch.testing.assert_close(base, other)
+    changed[:, 4:8, 4:8] = 255
+    parts, _ = loss(Output([logits]), {"mask": changed, "label": label})
+    torch.testing.assert_close(parts["label_ce"], base_parts["label_ce"])
+
+
+def test_label_smoothing_keeps_some_loss():
+    logits = torch.full((1, 5, 8, 8), -20.0)
+    logits[:, 2] = 20.0
+    label = torch.full((1, 8, 8), 255)
+    label[0, :4] = 2
+    assert label_ce(logits, torch.full_like(label, 2), label, classes=5) > 0
