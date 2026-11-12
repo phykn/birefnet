@@ -1,7 +1,9 @@
+import importlib
+
 import numpy as np
 from PIL import Image
 
-from src.data.synthetic import generate
+generate = importlib.import_module("scripts.00_synthetic").generate
 
 
 def read(path):

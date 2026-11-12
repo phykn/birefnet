@@ -11,12 +11,9 @@ def pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def amp_enabled(device: torch.device) -> bool:
-    # On Apple GPUs float16 runs several times faster than float32; bfloat16 does not.
-    return device.type in ("cuda", "mps")
-
-
-def autocast_dtype(device: torch.device) -> torch.dtype:
+def pick_amp_dtype(device: torch.device) -> torch.dtype | None:
+    if device.type == "cpu":
+        return None
     if device.type == "cuda":
         with torch.cuda.device(device):
             if torch.cuda.is_bf16_supported(including_emulation=False):
@@ -24,12 +21,7 @@ def autocast_dtype(device: torch.device) -> torch.dtype:
     return torch.float16
 
 
-def autocast(device: torch.device, dtype: torch.dtype, enabled: bool = True):
-    context = (
-        torch.cuda.device(device)
-        if enabled and device.type == "cuda"
-        else nullcontext()
-    )
-    # Autocast checks BF16 support while its context is constructed.
+def autocast(device: torch.device, dtype: torch.dtype | None):
+    context = torch.cuda.device(device) if device.type == "cuda" else nullcontext()
     with context:
-        return torch.amp.autocast(device.type, dtype=dtype, enabled=enabled)
+        return torch.amp.autocast(device.type, dtype=dtype, enabled=dtype is not None)

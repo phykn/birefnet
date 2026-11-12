@@ -1,31 +1,18 @@
-import cv2
+import random
+
 import numpy as np
-from ..prepare import fit_tensor, fit_mask, plan
+from .model_input import fit_image, fit_mask, plan_fit
 from .augment import (
-    blur,
-    edge_mask,
-    flip,
-    gamma,
-    illumination,
-    jitter,
-    noise,
-    pick_focus,
-    zoom,
+    apply_blur,
+    apply_gamma,
+    apply_noise,
+    apply_shading,
+    hide_edges,
+    pick_crop,
+    pick_painted_pixel,
+    rotate_flip,
 )
 from .io import read_sample
-
-
-def hide_boundaries(mask: np.ndarray, radius: int) -> np.ndarray:
-    """Ignore mask pixels within ``radius`` of another class; the image border is no boundary."""
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)
-    )
-    labeled = mask != 255
-    near = np.zeros(mask.shape, dtype=bool)
-    for cls in np.unique(mask[labeled]):
-        inside = (mask == cls).astype(np.uint8)
-        near |= cv2.dilate(inside, kernel).astype(bool) & labeled & (mask != cls)
-    return np.where(near, 255, mask)
 
 
 class MaskDataset:
@@ -36,36 +23,46 @@ class MaskDataset:
         return len(self.pairs)
 
     def __getitem__(self, index):
-        cfg = self.cfg
-        a = cfg.augment
-        image, mask, *labels = read_sample(self.pairs[index], cfg.model.classes)
+        image, *targets = read_sample(self.pairs[index], self.cfg.model.classes)
+        image, targets, cut, side = self.crop(image, targets)
+        image, targets = self.augment(image, targets)
+        return self.to_tensor(image, targets, cut, side)
+
+    def crop(self, image, targets):
         focus = None
-        if labels:
-            if cfg.loss.mask_edge:
-                mask = hide_boundaries(mask, cfg.loss.mask_edge)
-            focus = pick_focus(labels[0])
-        region, cut, side = zoom(image.shape[:2], a.zoom, cfg.train.crop, focus)
-        image, mask = image[region].copy(), mask[region].copy()
-        labels = [label[region] for label in labels]
-        image = jitter(image, (a.brightness, a.contrast))
-        image = gamma(image, a.gamma)
-        image = illumination(image, a.light)
-        image = blur(image, a.blur)
-        image = noise(image, a.noise)
-        if np.random.random() < a.hide_edges:
-            image, mask, *labels = edge_mask(image, mask, *labels)
-        fit = plan(*image.shape[:2], size=cfg.train.crop, scale=cfg.train.crop / side)
-        tensor, _ = fit_tensor(image, is_sem=True, fit=fit)
-        targets = [
-            fit_mask(m, fit, padding=255).astype(np.int64) for m in (mask, *labels)
-        ]
+        if len(targets) > 1:
+            focus = pick_painted_pixel(targets[1])
+        region, cut, side = pick_crop(
+            image.shape[:2], self.cfg.augment.zoom, self.cfg.train.crop, focus
+        )
+        return image[region], [t[region] for t in targets], cut, side
+
+    def augment(self, image, targets):
+        a = self.cfg.augment
+        if random.random() < a.gamma.p:
+            image = apply_gamma(image, a.gamma.range)
+        if random.random() < a.shading.p:
+            image = apply_shading(image, a.shading.max)
+        if random.random() < a.blur.p:
+            image = apply_blur(image, a.blur.max_sigma)
+        if random.random() < a.noise.p:
+            image = apply_noise(image, a.noise.max_std)
+        if random.random() < a.hide_edges.p:
+            image, *targets = hide_edges(image, *targets)
+        return image, targets
+
+    def to_tensor(self, image, targets, cut, side):
+        size = self.cfg.train.crop
+        fit = plan_fit(*image.shape, size=size, scale=size / side)
+        tensor, _ = fit_image(image, fit=fit)
+        targets = [fit_mask(t, fit, padding=255) for t in targets]
         cut = fit_mask(cut, fit)
-        pixels, cut, *targets = flip(tensor.transpose(1, 2, 0), cut, *targets)
+        pixels, cut, *targets = rotate_flip(tensor.transpose(1, 2, 0), cut, *targets)
         sample = {
             "image": np.ascontiguousarray(pixels.transpose(2, 0, 1)),
             "mask": targets[0],
             "cut": cut[None],
         }
-        if labels:
+        if len(targets) > 1:
             sample["label"] = targets[1]
         return sample

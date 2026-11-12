@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 from dataclasses import asdict
 import torch
-from ..config import parse
+from ..config import parse_config
 from ..model.checkpoint import pack_model, read_checkpoint, load_trained, trained_state
 
 
@@ -39,7 +39,7 @@ class CheckpointStore:
 
     def load_resume(self, path):
         state = read_checkpoint(path)
-        if asdict(parse(state["config"], ignore_unknown=True)) != asdict(self.cfg):
+        if asdict(parse_config(state["config"], ignore_unknown=True)) != asdict(self.cfg):
             raise ValueError("Resume checkpoint config differs from saved config.yaml")
         for key in ("optimizer", "scheduler", "scaler", "ema", "best", "step"):
             if key not in state:

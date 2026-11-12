@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from dataclasses import asdict
-from ..config import parse, resolve
+from ..config import parse_config, resolve
 
 FORMAT = "birefnet-multiclass-v3"
 # Frozen backbone weights are reconstructed from the local base checkpoint.
@@ -74,7 +74,7 @@ def read_checkpoint(path):
                 "이전 형식 birefnet-multiclass-v2입니다. 커밋 750d7d9의 코드로 읽으세요."
             )
         raise ValueError(f"Unsupported checkpoint format: {fmt}")
-    parse(state["config"], ignore_unknown=True)
+    parse_config(state["config"], ignore_unknown=True)
     return state
 
 
@@ -96,7 +96,7 @@ def build(cfg):
 
 def load(path, device):
     state = read_checkpoint(path)
-    cfg = parse(state["config"], ignore_unknown=True)
+    cfg = parse_config(state["config"], ignore_unknown=True)
     model = build(cfg)
     load_trained(model, state["model"])
     return model.to(device).eval()

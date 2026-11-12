@@ -4,21 +4,7 @@ import cv2
 import numpy as np
 
 
-def flip(*items: np.ndarray) -> tuple[np.ndarray, ...]:
-    turns = int(np.random.randint(4))
-    mirror = bool(np.random.randint(2))
-    return tuple(_flip(item, turns, mirror) for item in items)
-
-
-def _flip(x: np.ndarray, turns: int, mirror: bool) -> np.ndarray:
-    x = np.rot90(x, k=turns)
-    if mirror:
-        x = np.fliplr(x)
-    return np.ascontiguousarray(x)
-
-
-def pick_focus(label: np.ndarray) -> tuple[int, int] | None:
-    """Pick a painted label pixel, choosing its class first so rare classes get crops too."""
+def pick_painted_pixel(label: np.ndarray) -> tuple[int, int] | None:
     painted = np.unique(label[label != 255])
     if painted.size == 0:
         return None
@@ -27,18 +13,12 @@ def pick_focus(label: np.ndarray) -> tuple[int, int] | None:
     return int(ys[pick]), int(xs[pick])
 
 
-def zoom(
+def pick_crop(
     shape: tuple[int, int],
     limits: tuple[float, float],
     crop: int = 1024,
     focus: tuple[int, int] | None = None,
 ) -> tuple[tuple[slice, slice], np.ndarray, int]:
-    """Pick a square window as if the image were taken at another magnification.
-
-    Returns the window, its cut edges, and the window side in source pixels; the
-    caller resizes that side to the model input, so zooming out leaves padding.
-    The window contains ``focus`` when one is given.
-    """
     height, width = shape
     low, high = limits
     scale = float(np.exp(random.uniform(np.log(low), np.log(high))))
@@ -65,24 +45,14 @@ def zoom(
     return np.s_[top:bottom, left:right], cut, side
 
 
-def jitter(image: np.ndarray, limits: tuple[float, float]) -> np.ndarray:
-    bright_max, contrast_max = limits
-    bright = random.uniform(-bright_max, bright_max)
-    contrast = random.uniform(-contrast_max, contrast_max)
-    x = image.astype(np.float32) / 255.0
-    x = (x - 0.5) * (1.0 + contrast) + 0.5 + bright
-    return np.rint(np.clip(x, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-
-def gamma(image: np.ndarray, limits: tuple[float, float]) -> np.ndarray:
+def apply_gamma(image: np.ndarray, limits: tuple[float, float]) -> np.ndarray:
     low, high = limits
     value = float(np.exp(random.uniform(np.log(low), np.log(high))))
     x = (image.astype(np.float32) / 255.0) ** value
     return np.rint(x * 255.0).astype(np.uint8)
 
 
-def illumination(image: np.ndarray, strength: float) -> np.ndarray:
-    """Brighten one side and darken the other, like an uneven SEM detector signal."""
+def apply_shading(image: np.ndarray, strength: float) -> np.ndarray:
     height, width = image.shape[:2]
     angle = random.uniform(0.0, 2.0 * np.pi)
     ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
@@ -90,42 +60,30 @@ def illumination(image: np.ndarray, strength: float) -> np.ndarray:
     ramp -= ramp.min()
     ramp = ramp / ramp.max() * 2.0 - 1.0 if ramp.max() > 0 else ramp
     gain = 1.0 + random.uniform(-strength, strength) * ramp
-    if image.ndim == 3:
-        gain = gain[..., None]
     x = image.astype(np.float32) * gain
     return np.rint(np.clip(x, 0.0, 255.0)).astype(np.uint8)
 
 
-def blur(image: np.ndarray, strength: float) -> np.ndarray:
-    """Soften edges like a slightly unfocused SEM shot; strength is the largest sigma in pixels."""
+def apply_blur(image: np.ndarray, strength: float) -> np.ndarray:
     sigma = random.uniform(0.0, strength)
     if sigma < 0.1:
         return image
     return cv2.GaussianBlur(image, (0, 0), sigma)
 
 
-def noise(image: np.ndarray, strength: float) -> np.ndarray:
-    """Add grain like a fast or low-current SEM scan; strength is the largest std as a 0-1 fraction."""
+def apply_noise(image: np.ndarray, strength: float) -> np.ndarray:
     std = random.uniform(0.0, strength) * 255.0
-    # Drawn from Python's random state, which the data loader seeds per worker.
     rng = np.random.default_rng(random.getrandbits(32))
     x = image.astype(np.float32) + rng.normal(0.0, std, image.shape).astype(np.float32)
     return np.rint(np.clip(x, 0.0, 255.0)).astype(np.uint8)
 
 
-def edge_mask(
-    image: np.ndarray,
-    mask: np.ndarray,
-    *others: np.ndarray,
-    ignore_index: int = 255,
+def hide_edges(
+    image: np.ndarray, mask: np.ndarray, *others: np.ndarray
 ) -> tuple[np.ndarray, ...]:
-    """Hide image edges like a stage or info bar; ``others`` (labels) are hidden with the mask."""
-    roi = mask != ignore_index
+    roi = mask != 255
     count = np.count_nonzero(roi)
-    if count == 0:
-        return image, mask, *others
     height, width = mask.shape
-    # A bounded retry also handles sparse ROIs at the image border.
     for _ in range(32):
         top, bottom = (random.randint(0, height // 4) for _ in range(2))
         left, right = (random.randint(0, width // 4) for _ in range(2))
@@ -137,7 +95,19 @@ def edge_mask(
         value = random.choice((0, 255, 127, random.randint(0, 255)))
         image, mask = image.copy(), mask.copy()
         image[hidden] = value
-        mask[hidden] = ignore_index
-        others = tuple(np.where(hidden, ignore_index, other) for other in others)
+        mask[hidden] = 255
+        others = tuple(np.where(hidden, 255, other) for other in others)
         return image, mask, *others
     return image, mask, *others
+
+
+def rotate_flip(*items: np.ndarray) -> tuple[np.ndarray, ...]:
+    turns = int(np.random.randint(4))
+    mirror = bool(np.random.randint(2))
+    result = []
+    for item in items:
+        item = np.rot90(item, k=turns)
+        if mirror:
+            item = np.fliplr(item)
+        result.append(np.ascontiguousarray(item))
+    return tuple(result)

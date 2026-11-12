@@ -3,16 +3,12 @@ import argparse
 from src.run import train
 
 
-def parse_args() -> argparse.Namespace:
+def main() -> None:
     parser = argparse.ArgumentParser()
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--resume")
     source.add_argument("--config")
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+    args = parser.parse_args()
     train(args.resume, args.config)
 
 

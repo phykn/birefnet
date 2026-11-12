@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts._draw import colorize, figure, label_overlay, overlay
 from src.config import load_config, resolve
-from src.data.io import pairs as get_pairs, read_sample
+from src.data.io import pair_files, read_sample
 
 
 def main() -> None:
@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--config")
     cfg = load_config(parser.parse_args().config)
     labels = resolve(cfg.data.label_dir) if cfg.data.label_dir else None
-    pairs = get_pairs(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir), labels)
+    pairs = pair_files(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir), labels)
     rows = []
     for pair in random.sample(pairs, 2):
         image, mask, *label = read_sample(pair, cfg.model.classes)

@@ -1,6 +1,6 @@
 import torch
 
-from src.config import Config
+from src.config import load_config
 from src.model import Output
 from src.train.loss import TrainLoss
 from src.train.schedule import cosine_schedule
@@ -26,7 +26,7 @@ class Tiny(torch.nn.Module):
 
 
 def trainer(tmp_path, model=None):
-    cfg = Config()
+    cfg = load_config()
     cfg.train.steps = 4
     cfg.train.warmup = 0
     cfg.train.accum = 1
@@ -40,3 +40,4 @@ def trainer(tmp_path, model=None):
         }
     ]
     return Trainer(m, batches, [], TrainLoss(), opt, sch, tmp_path, cfg)
+

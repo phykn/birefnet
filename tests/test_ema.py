@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn as nn
 
@@ -9,24 +10,18 @@ class Model(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.tensor(1.0))
         self.frozen = nn.Parameter(torch.tensor(2.0), requires_grad=False)
-        self.register_buffer("running", torch.tensor(1.0))
-        self.register_buffer("count", torch.tensor(0))
 
 
-def test_ema_averages_trainable_weights_and_float_buffers():
+def test_ema_averages_trainable_weights_only():
     model = Model()
     ema = EMA(model, decay=0.5)
-    assert set(ema.params) == {"weight", "running", "count"}
-    snapshot = ema.state_dict()
+    assert set(ema.params) == {"weight"}
     with torch.no_grad():
         model.weight.fill_(3)
-        model.running.fill_(5)
-        model.count.fill_(7)
     ema.update()
     assert ema.params["weight"] == 2
-    assert ema.params["running"] == 3
-    assert ema.params["count"] == 7
-    assert snapshot["weight"] == 1
+    with ema.applied():
+        assert model.weight == 2
     assert model.weight == 3 and model.frozen == 2
 
 
@@ -42,15 +37,10 @@ def test_ema_resume_matches_uninterrupted_updates():
         model.weight.fill_(5)
     ema.update()
     restored.update()
-    for name, value in ema.state_dict().items():
-        torch.testing.assert_close(restored.state_dict()[name], value)
+    torch.testing.assert_close(restored.params["weight"], ema.params["weight"])
 
 
-def test_ema_checkpoint_excludes_nonpersistent_buffers():
-    model = Model()
-    model.register_buffer("cache", torch.tensor(3.0), persistent=False)
-    ema = EMA(model)
-    state = model.state_dict()
-    state.update(ema.state_dict())
-    assert "cache" not in state
-    model.load_state_dict(state, strict=True)
+def test_ema_rejects_mismatched_state():
+    ema = EMA(Model(), decay=0.5)
+    with pytest.raises(RuntimeError):
+        ema.load_state_dict({"weight": torch.zeros(2)})

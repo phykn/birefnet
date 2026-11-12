@@ -10,9 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts._draw import colorize, figure, overlay
-from src.data.io import read_image, read_pair
+from src.data.io import read_image, read_sample
 from src.device import pick_device
-from src.predict import predict_logits, probabilities
+from src.predict import predict
 from src.model.checkpoint import load as load_model
 
 
@@ -26,18 +26,17 @@ def run(
     if class_id is not None and not 0 <= class_id < model.num_classes:
         raise ValueError("class_id must be in [0, num_classes)")
     if mask_path is not None:
-        image, target = read_pair(image_path, mask_path, model.num_classes)
+        image, target = read_sample((image_path, mask_path), model.num_classes)
         panels = [image, colorize(target, model.num_classes, target != 255)]
     else:
         image = read_image(image_path)
         panels = [image]
-    logits = predict_logits(model, image, tiles=tiles)
-    labels = logits.argmax(axis=0).astype(np.uint8)
+    result = predict(model, image, tiles=tiles)
+    labels = result["classes"].astype(np.uint8)
     colors = colorize(labels, model.num_classes)
     panels.extend([colors, overlay(image, colors)])
     if class_id is not None:
-        probs = probabilities(logits)
-        panels.append(np.rint(probs[class_id] * 255).astype(np.uint8))
+        panels.append(np.rint(result["probs"][class_id] * 255).astype(np.uint8))
     return labels, panels
 
 

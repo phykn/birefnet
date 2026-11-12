@@ -1,7 +1,7 @@
 import torch
 from src.model import Output
 from src.train.loss import TrainLoss
-from src.evaluate import confusion_matrix, scores
+from src.evaluate import compute_scores, count_confusion
 
 
 def test_ce_and_ignore():
@@ -26,10 +26,10 @@ def test_ce_and_ignore():
 
 def test_metrics():
     matrix = torch.tensor([[4, 1], [2, 3]])
-    s = scores(matrix)
+    s = compute_scores(matrix)
     assert s["class_0_iou"] == 4 / 7 and s["class_1_iou"] == 0.5
     assert s["miou"] == (4 / 7 + 0.5) / 2 and s["pixel_accuracy"] == 0.7
-    assert confusion_matrix(torch.tensor([0, 1]), torch.tensor([0, 255]), 2).sum() == 1
+    assert count_confusion(torch.tensor([0, 1]), torch.tensor([0, 255]), 2).sum() == 1
 
 
 def fixed_batch():

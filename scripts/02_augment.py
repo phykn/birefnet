@@ -11,9 +11,9 @@ sys.path.insert(0, str(ROOT))
 
 from scripts._draw import colorize, figure, label_overlay, overlay
 from src.data.dataset import MaskDataset
-from src.data.io import pairs
+from src.data.io import pair_files
 from src.config import load_config, resolve
-from src.prepare import MEAN, STD
+from src.data.model_input import MEAN, STD
 
 
 def main() -> None:
@@ -22,7 +22,7 @@ def main() -> None:
     cfg = load_config(parser.parse_args().config)
     labels = resolve(cfg.data.label_dir) if cfg.data.label_dir else None
     dataset = MaskDataset(
-        pairs(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir), labels), cfg
+        pair_files(resolve(cfg.data.image_dir), resolve(cfg.data.mask_dir), labels), cfg
     )
     rows = []
     for index in random.sample(range(len(dataset)), 2):

@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from ..device import amp_enabled, autocast, autocast_dtype
+from ..device import autocast, pick_amp_dtype
 from ..evaluate import evaluate
 from .checkpoint import CheckpointStore
 from .ema import EMA
@@ -44,10 +44,9 @@ class Trainer:
         self.global_step = 0
         self.best_miou = float("-inf")
 
-        self.use_amp = amp_enabled(self.device)
-        self.amp_dtype = autocast_dtype(self.device)
+        self.amp_dtype = pick_amp_dtype(self.device)
         self.scaler = torch.amp.GradScaler(
-            self.device.type, enabled=self.use_amp and self.amp_dtype == torch.float16
+            self.device.type, enabled=self.amp_dtype == torch.float16
         )
         self.valid_pairs = valid_pairs
         self.metrics = {}
@@ -104,7 +103,7 @@ class Trainer:
         share = self.teacher_share()
         for _ in range(self.accum_steps):
             batch = self.move(self.next_batch())
-            with autocast(self.device, dtype=self.amp_dtype, enabled=self.use_amp):
+            with autocast(self.device, self.amp_dtype):
                 inputs = batch["image"]
                 if share > 0:
                     prepared = self.model.prepare(inputs)

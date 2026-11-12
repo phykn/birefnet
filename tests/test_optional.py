@@ -1,7 +1,7 @@
 import pytest
 import torch
 from torch.nn import functional as F
-from src.config import parse, load_config
+from src.config import load_config, parse_config
 from src.model import BiRefNet, Output
 from src.train.loss import make_band, SegmentationLoss, TrainLoss
 from tests.model_utils import TinyBackbone
@@ -23,12 +23,12 @@ from tests.train_utils import trainer
 def test_optional_config(key, value):
     section, field = key.split(".")
     with pytest.raises(ValueError, match=key):
-        parse({section: {field: value}})
+        parse_config({section: {field: value}})
 
 
 def test_optional_features_are_off_by_default():
     cfg = load_config()
-    assert cfg.train.crop == 512 and not cfg.model.depth
+    assert cfg.train.crop == 1024 and not cfg.model.depth
     assert all(
         getattr(cfg.loss, k) == 0 for k in ("boundary", "aux", "label_blur", "teacher")
     )
@@ -164,12 +164,12 @@ def test_v3_before_optional_fields_can_resume(tmp_path):
 
 
 def test_real_optional_step_and_roundtrip(tmp_path):
-    from src.config import Config, resolve
+    from src.config import resolve
     from src.model.checkpoint import build, load
     from src.train.trainer import Trainer
     from src.train.schedule import cosine_schedule
 
-    cfg = Config()
+    cfg = load_config()
     if (
         not resolve(cfg.model.weight).is_file()
         or not resolve(cfg.model.depth_weight).is_dir()

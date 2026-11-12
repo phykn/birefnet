@@ -5,7 +5,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import resolve
-from src.data.io import pairs
+from src.data.io import pair_files
 from src.device import pick_device
 from src.model.checkpoint import load
 from src.evaluate import evaluate
@@ -24,7 +24,7 @@ def main():
     model = load(
         args.weight, torch.device(args.device) if args.device else pick_device()
     )
-    data = pairs(args.images, args.masks)
+    data = pair_files(args.images, args.masks)
     result = evaluate(model, data, args.tiles)
     print(f"pairs: {len(data)}")
     for name, value in result.items():

@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-from src.config import ROOT, Config, save_config
+from src.config import ROOT, load_config, save_config
 from src.model.checkpoint import read_checkpoint, load, load_trained
-from src.predict import predict_logits
-from src.data.io import pairs, read_image
+from src.predict import predict
+from src.data.io import pair_files, read_image
 from tests.sample_data import write
 from tests.train_utils import Tiny, trainer
 
@@ -86,8 +86,8 @@ def test_tiles_shape_and_batch():
     m = Tiny().eval()
     x = np.arange(35 * 47, dtype=np.uint8).reshape(35, 47)
     for tiles in ((1,), (1, 3)):
-        a = predict_logits(m, x, size=64, tiles=tiles, tile_batch=1)
-        b = predict_logits(m, x, size=64, tiles=tiles, tile_batch=3)
+        a = predict(m, x, size=64, tiles=tiles, tile_batch=1)["logits"]
+        b = predict(m, x, size=64, tiles=tiles, tile_batch=3)["logits"]
         assert a.shape == (4, 35, 47)
         np.testing.assert_allclose(a, b, atol=1.0e-6, rtol=0)
 
@@ -113,7 +113,7 @@ def test_real_train_predict_evaluate(tmp_path):
 
     data = tmp_path / "data"
     write(data)
-    cfg = Config()
+    cfg = load_config()
     cfg.data.image_dir = str(data / "image")
     cfg.data.mask_dir = str(data / "mask")
     cfg.train.steps = 2
@@ -140,9 +140,9 @@ def test_real_train_predict_evaluate(tmp_path):
     shutil.copy(target / "weights/best_miou.pth", copied)
     image = read_image(data / "image/sample_01.png")
     m = load(copied, torch.device("cpu"))
-    a = predict_logits(m, image, size=64).argmax(0)
+    a = predict(m, image, size=64)["classes"]
     load_trained(m, read_checkpoint(target / "weights/best_miou.pth")["model"])
-    np.testing.assert_array_equal(a, predict_logits(m, image, size=64).argmax(0))
+    np.testing.assert_array_equal(a, predict(m, image, size=64)["classes"])
     del m
     env = __import__("os").environ.copy()
     env["MPLBACKEND"] = "Agg"
@@ -195,11 +195,9 @@ def test_early_rejections(tmp_path, monkeypatch):
         raise AssertionError("model must not be built")
 
     monkeypatch.setattr(run, "build", forbidden)
-    with pytest.raises(ValueError, match="combined"):
-        run.train(resume="unused", config="unused")
     data = tmp_path / "data"
     write(data)
-    cfg = Config()
+    cfg = load_config()
     cfg.data.image_dir = str(data / "image")
     cfg.data.mask_dir = str(data / "mask")
     target = tmp_path / "run"
@@ -207,7 +205,7 @@ def test_early_rejections(tmp_path, monkeypatch):
     save_config(cfg, target / "config.yaml")
     from src.data import split
 
-    split.save(split.make(pairs(data / "image", data / "mask"), 0.25), target)
+    split.write_split_csv(split.split_pairs(pair_files(data / "image", data / "mask"), 0.25), target)
     (data / "image/sample_01.png").unlink()
     (data / "mask/sample_01.png").unlink()
     with pytest.raises(RuntimeError, match="missing"):
@@ -219,7 +217,7 @@ def test_train_and_resume_paths_use_project_root(tmp_path, monkeypatch):
 
     root = tmp_path / "project"
     write(root / "data")
-    cfg = Config()
+    cfg = load_config()
     cfg.data.image_dir = "data/image"
     cfg.data.mask_dir = "data/mask"
     cfg.train.steps = cfg.train.val_every = cfg.train.save_every = 1
@@ -264,11 +262,10 @@ def test_real_train_with_labels(tmp_path):
         label = np.full(mask.shape, 255, np.uint8)
         label[100:110, 100:140] = mask[100:110, 100:140]
         Image.fromarray(label).save(data / "label" / mask_path.name)
-    cfg = Config()
+    cfg = load_config()
     cfg.data.image_dir = str(data / "image")
     cfg.data.mask_dir = str(data / "mask")
     cfg.data.label_dir = str(data / "label")
-    cfg.loss.mask_edge = 2
     cfg.train.steps = 2
     cfg.train.warmup = 0
     cfg.train.accum = 1

@@ -2,7 +2,7 @@
 
 Fine-tune BiRefNet to label multiple classes in scanning electron microscopy (SEM) images. The pipeline uses grayscale preprocessing and SEM-oriented augmentations for contrast, uneven illumination, blur, and noise. It freezes the Swin-L backbone and trains the squeeze module and decoder.
 
-Train, preview predictions, and evaluate on CUDA, Apple Silicon (MPS), or CPU. The default training crop is 512 × 512. Prediction supports overlapping tiles for large images.
+Train, preview predictions, and evaluate on CUDA, Apple Silicon (MPS), or CPU. The default training crop is 1024 × 1024. Prediction supports overlapping tiles for large images.
 
 ## Quick start
 
@@ -75,15 +75,14 @@ DATA/label/0001.png   # brush strokes, 255 elsewhere
 | `loss.label_weight` | `1.0` | Weight of cross-entropy on painted pixels, averaged over painted pixels only |
 | `loss.mask_weight` | `3.0` | Weight of cross-entropy and Dice on the AI mask, away from painted pixels |
 | `loss.label_smooth` | `0.05` | Label smoothing on painted pixels, so one wrong stroke cannot force full confidence |
-| `loss.mask_edge` | `4` | Ignore AI-mask pixels within this many source pixels of a class boundary |
 
-The defaults scored best against the true answer on synthetic data: `mask_edge: 4` beat no edge rule and the EMA teacher, and `mask_weight: 3.0` beat 0.3 and 1.0. The label term is averaged over painted pixels only, so each painted pixel still counts for far more than each mask pixel. If your AI masks are less accurate than the synthetic ones, raise the error rates in `src/data/synthetic.py` and compare weights again.
+The defaults scored best against the true answer on synthetic data: `mask_weight: 3.0` beat 0.3 and 1.0. The label term is averaged over painted pixels only, so each painted pixel still counts for far more than each mask pixel. If your AI masks are less accurate than the synthetic ones, raise the error rates in `scripts/00_synthetic.py` and compare weights again.
 
 Validation then reports `label_miou` on painted pixels and `mask_miou` against the AI mask; `best_miou.pth` is chosen by `label_miou`. Painted pixels usually sit where the AI mask is already right, so `label_miou` checks that trusted pixels are kept, not how well mask errors were fixed.
 
 ### Choose settings on synthetic data
 
-Synthetic samples come with the true answer in `truth/`, so they can show which settings fix mask errors. The error rates and sizes are constants at the top of `src/data/synthetic.py`; adjust them to resemble your real AI masks and strokes.
+Synthetic samples come with the true answer in `truth/`, so they can show which settings fix mask errors. The error rates and sizes are constants at the top of `scripts/00_synthetic.py`; adjust them to resemble your real AI masks and strokes.
 
 ```bash
 .venv/bin/python scripts/00_synthetic.py   # data/synthetic/{train,test}/{image,mask,label,truth}
@@ -115,7 +114,6 @@ data:
   label_dir: DATA/label
 loss:
   mask_weight: 3.0
-  mask_edge: 4
 ```
 
 ```yaml
@@ -129,7 +127,6 @@ data:
 loss:
   label_weight: 0.0
   mask_weight: 1.0
-  mask_edge: 0
   teacher: 0.0
 ```
 
@@ -153,8 +150,8 @@ For depth input, place the model files in the directory specified by `model.dept
 .venv/bin/python -m pytest -q
 ```
 
-Tests skip hardware and model checks when the required GPU or checkpoints are unavailable. Set `BIREFNET_OLD` to a checkout of `750d7d9` to enable comparisons with the earlier implementation.
+Tests skip hardware and model checks when the required GPU or checkpoints are unavailable.
 
 ## Code layout
 
-`src/run.py` assembles training from the schema in `src/config.py`. Data pairing, splitting, and augmentation live in `src/data/`; shared image fitting lives in `src/prepare.py`. `src/model/` preserves the pretrained architecture and checkpoint keys. `src/train/` owns losses, EMA, optimizer steps, and training checkpoints. Both validation and the evaluation CLI use `src/evaluate.py`, which calls the whole-image and tiled inference in `src/predict.py`.
+`src/run.py` assembles training from the schema in `src/config.py`. Data pairing, splitting, augmentation, and model-input fitting live in `src/data/`. `src/model/` preserves the pretrained architecture and checkpoint keys. `src/train/` owns losses, EMA, optimizer steps, and training checkpoints. Both validation and the evaluation CLI use `src/evaluate.py`, which calls the whole-image and tiled inference in `src/predict.py`.
