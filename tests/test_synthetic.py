@@ -22,10 +22,15 @@ def test_synthetic_samples(tmp_path):
     label_wrong = mask_wrong = 0
     for split, count in (("train", 4), ("test", 1)):
         root = first / split
-        names = {n: sorted(p.name for p in (root / n).iterdir()) for n in ("image", "mask", "label", "truth")}
+        names = {
+            n: sorted(p.name for p in (root / n).iterdir())
+            for n in ("image", "mask", "label", "truth")
+        }
         assert all(len(v) == count and v == names["image"] for v in names.values())
         for name in names["image"]:
-            image, mask, label, truth = (read(root / n / name) for n in ("image", "mask", "label", "truth"))
+            image, mask, label, truth = (
+                read(root / n / name) for n in ("image", "mask", "label", "truth")
+            )
             assert image.shape == mask.shape == label.shape == truth.shape == (256, 256)
             assert not (truth == 255).any()
             painted = label != 255
@@ -35,4 +40,3 @@ def test_synthetic_samples(tmp_path):
             mask_wrong += np.count_nonzero(mask[~painted] != truth[~painted])
     assert label_wrong > 0
     assert mask_wrong > 0
-

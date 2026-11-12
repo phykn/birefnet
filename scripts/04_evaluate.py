@@ -13,7 +13,9 @@ from src.model.checkpoint import load_model
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Score a saved model on paired images and masks")
+    parser = argparse.ArgumentParser(
+        description="Score a saved model on paired images and masks"
+    )
     parser.add_argument("--weight", required=True)
     parser.add_argument("--images", default=str(resolve("data/test/image")))
     parser.add_argument("--masks", default=str(resolve("data/test/mask")))

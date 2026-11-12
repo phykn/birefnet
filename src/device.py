@@ -3,7 +3,7 @@ from contextlib import nullcontext
 import torch
 
 
-def pick_device() -> torch.device:
+def pick_device():
     if torch.cuda.is_available():
         return torch.device("cuda")
     if torch.backends.mps.is_available():
@@ -11,7 +11,7 @@ def pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def pick_amp_dtype(device: torch.device) -> torch.dtype | None:
+def pick_amp_dtype(device):
     if device.type == "cpu":
         return None
     if device.type == "cuda":
@@ -21,7 +21,7 @@ def pick_amp_dtype(device: torch.device) -> torch.dtype | None:
     return torch.float16
 
 
-def autocast(device: torch.device, dtype: torch.dtype | None):
+def autocast(device, dtype):
     context = torch.cuda.device(device) if device.type == "cuda" else nullcontext()
     with context:
         return torch.amp.autocast(device.type, dtype=dtype, enabled=dtype is not None)

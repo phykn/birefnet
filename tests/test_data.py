@@ -59,7 +59,9 @@ def test_three_folders(tmp_path):
     with pytest.raises(ValueError, match=r"missing_labels=\['sample_02'\]"):
         pair_files(tmp_path / "image", tmp_path / "mask", tmp_path / "label")
     mask = np.asarray(Image.open(tmp_path / "mask/sample_01.png"))
-    Image.fromarray(np.full(mask.shape, 9, np.uint8)).save(tmp_path / "label/sample_02.png")
+    Image.fromarray(np.full(mask.shape, 9, np.uint8)).save(
+        tmp_path / "label/sample_02.png"
+    )
     data = pair_files(tmp_path / "image", tmp_path / "mask", tmp_path / "label")
     with pytest.raises(ValueError, match="sample_02"):
         read_sample(data[1], 4)

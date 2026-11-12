@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 
-def pick_painted_pixel(label: np.ndarray) -> tuple[int, int] | None:
+def pick_painted_pixel(label):
     painted = np.unique(label[label != 255])
     if painted.size == 0:
         return None
@@ -14,11 +14,11 @@ def pick_painted_pixel(label: np.ndarray) -> tuple[int, int] | None:
 
 
 def pick_crop(
-    shape: tuple[int, int],
-    limits: tuple[float, float],
-    crop: int = 1024,
-    focus: tuple[int, int] | None = None,
-) -> tuple[tuple[slice, slice], np.ndarray, int]:
+    shape,
+    limits,
+    crop=1024,
+    focus=None,
+):
     height, width = shape
     low, high = limits
     scale = float(np.exp(random.uniform(np.log(low), np.log(high))))
@@ -45,14 +45,14 @@ def pick_crop(
     return np.s_[top:bottom, left:right], cut, side
 
 
-def apply_gamma(image: np.ndarray, limits: tuple[float, float]) -> np.ndarray:
+def apply_gamma(image, limits):
     low, high = limits
     value = float(np.exp(random.uniform(np.log(low), np.log(high))))
     x = (image.astype(np.float32) / 255.0) ** value
     return np.rint(x * 255.0).astype(np.uint8)
 
 
-def apply_shading(image: np.ndarray, strength: float) -> np.ndarray:
+def apply_shading(image, strength):
     height, width = image.shape[:2]
     angle = random.uniform(0.0, 2.0 * np.pi)
     ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
@@ -64,23 +64,21 @@ def apply_shading(image: np.ndarray, strength: float) -> np.ndarray:
     return np.rint(np.clip(x, 0.0, 255.0)).astype(np.uint8)
 
 
-def apply_blur(image: np.ndarray, strength: float) -> np.ndarray:
+def apply_blur(image, strength):
     sigma = random.uniform(0.0, strength)
     if sigma < 0.1:
         return image
     return cv2.GaussianBlur(image, (0, 0), sigma)
 
 
-def apply_noise(image: np.ndarray, strength: float) -> np.ndarray:
+def apply_noise(image, strength):
     std = random.uniform(0.0, strength) * 255.0
     rng = np.random.default_rng(random.getrandbits(32))
     x = image.astype(np.float32) + rng.normal(0.0, std, image.shape).astype(np.float32)
     return np.rint(np.clip(x, 0.0, 255.0)).astype(np.uint8)
 
 
-def hide_edges(
-    image: np.ndarray, mask: np.ndarray, *others: np.ndarray
-) -> tuple[np.ndarray, ...]:
+def hide_edges(image, mask, *others):
     roi = mask != 255
     count = np.count_nonzero(roi)
     height, width = mask.shape
@@ -101,7 +99,7 @@ def hide_edges(
     return image, mask, *others
 
 
-def rotate_flip(*items: np.ndarray) -> tuple[np.ndarray, ...]:
+def rotate_flip(*items):
     turns = int(np.random.randint(4))
     mirror = bool(np.random.randint(2))
     result = []

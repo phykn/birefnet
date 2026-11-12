@@ -4,7 +4,7 @@ from PIL import Image
 from pathlib import Path
 
 
-def read_image(path: str) -> np.ndarray:
+def read_image(path):
     with Image.open(path) as image:
         if image.mode.startswith("I;16"):
             values = np.asarray(image)
@@ -13,7 +13,7 @@ def read_image(path: str) -> np.ndarray:
         return cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2GRAY)
 
 
-def pair_files(images, masks, labels=None) -> list[tuple[str, ...]]:
+def pair_files(images, masks, labels=None):
     folders = []
     for folder in [images, masks] + ([labels] if labels else []):
         files = {}
@@ -36,7 +36,7 @@ def pair_files(images, masks, labels=None) -> list[tuple[str, ...]]:
     return [tuple(folder[stem] for folder in folders) for stem in sorted(stems)]
 
 
-def read_sample(paths: tuple[str, ...], classes):
+def read_sample(paths, classes):
     image = read_image(paths[0])
     sample = [image]
     for path in paths[1:]:

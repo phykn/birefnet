@@ -30,9 +30,9 @@ def load_base(model, base):
     state = {}
     for key, value in base.items():
         shape = expected[key].shape
-        is_new_head = (
-            key.rsplit(".", 1)[0] in SEGMENTATION_HEADS
-            and value.shape == (1, *shape[1:])
+        is_new_head = key.rsplit(".", 1)[0] in SEGMENTATION_HEADS and value.shape == (
+            1,
+            *shape[1:],
         )
         if value.shape != shape and not is_new_head:
             raise RuntimeError(

@@ -95,7 +95,9 @@ def place_objects(rng, size, length):
     )
     shapes, classes = [], []
     for cls in defects:
-        for _ in range(int(rng.integers(OBJECTS_PER_CLASS[0], OBJECTS_PER_CLASS[1] + 1))):
+        for _ in range(
+            int(rng.integers(OBJECTS_PER_CLASS[0], OBJECTS_PER_CLASS[1] + 1))
+        ):
             canvas = np.zeros((size, size), dtype=np.uint8)
             center = tuple(int(v) for v in rng.integers(0, size, 2))
             angle = float(rng.uniform(0, 360))
@@ -119,7 +121,10 @@ def place_objects(rng, size, length):
                 stretch = rng.uniform(0.6, 1.0, 2)
                 r = radius * (1 + 0.25 * np.sin(lobes * theta + phase))
                 points = np.stack(
-                    [center[0] + r * stretch[0] * np.cos(theta), center[1] + r * stretch[1] * np.sin(theta)],
+                    [
+                        center[0] + r * stretch[0] * np.cos(theta),
+                        center[1] + r * stretch[1] * np.sin(theta),
+                    ],
                     axis=1,
                 )
                 cv2.fillPoly(canvas, [np.round(points).astype(np.int32)], 1)
@@ -130,19 +135,26 @@ def place_objects(rng, size, length):
 
 def render_image(rng, truth, size):
     image = np.asarray(BRIGHTNESS, dtype=np.float32)[truth]
-    texture = cv2.GaussianBlur(rng.normal(0, 1, (size, size)).astype(np.float32), (0, 0), 2)
+    texture = cv2.GaussianBlur(
+        rng.normal(0, 1, (size, size)).astype(np.float32), (0, 0), 2
+    )
     texture /= texture.std() + 1e-6
     sigma = rng.uniform(*TEXTURE_SIGMA, CLASSES).astype(np.float32)
     image += texture * sigma[truth]
     coarse = rng.uniform(-1, 1, (4, 4)).astype(np.float32)
-    image += cv2.resize(coarse, (size, size), interpolation=cv2.INTER_CUBIC).clip(-1, 1) * LIGHT
+    image += (
+        cv2.resize(coarse, (size, size), interpolation=cv2.INTER_CUBIC).clip(-1, 1)
+        * LIGHT
+    )
     image = cv2.GaussianBlur(image, (0, 0), BLUR_SIGMA)
     image += rng.normal(0, NOISE_SIGMA, (size, size)).astype(np.float32)
     return np.clip(np.rint(image), 0, 255).astype(np.uint8)
 
 
 def make_disk(radius):
-    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    return cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)
+    )
 
 
 def paint_labels(rng, truth, owner, count, length):
@@ -153,7 +165,11 @@ def paint_labels(rng, truth, owner, count, length):
     for _ in range(MAX_STROKES):
         if np.count_nonzero(label != 255) >= goal:
             break
-        target = -1 if count == 0 or rng.random() < BACKGROUND_STROKE else int(rng.integers(count))
+        target = (
+            -1
+            if count == 0 or rng.random() < BACKGROUND_STROKE
+            else int(rng.integers(count))
+        )
         region = (owner == target).astype(np.uint8)
         if not region.any():
             continue
@@ -220,7 +236,7 @@ def make_flawed_mask(rng, truth, shapes, classes, stroked, label, length):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Write synthetic images with a known truth, a flawed mask and brush labels"
+        description="Write synthetic images, flawed masks and brush labels"
     )
     parser.add_argument("--out", default="data/synthetic")
     parser.add_argument("--seed", type=int, default=0)

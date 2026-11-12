@@ -15,16 +15,21 @@ from src.predict import predict
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Predict one image and show the class map, overlay, and optional ground truth."
+        description="Predict one image and show the class map and overlay"
     )
     parser.add_argument("--weight", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
-    parser.add_argument("--mask", type=Path, help="Optional ground-truth mask for comparison")
     parser.add_argument(
-        "--device", help="Defaults to CUDA, then Apple GPU, then CPU, whichever is present"
+        "--mask", type=Path, help="Optional ground-truth mask for comparison"
+    )
+    parser.add_argument(
+        "--device",
+        help="Defaults to CUDA, then Apple GPU, then CPU, whichever is present",
     )
     parser.add_argument("--tiles", type=int, nargs="+", default=[1])
-    parser.add_argument("--class-id", type=int, help="Also show this class's probability map")
+    parser.add_argument(
+        "--class-id", type=int, help="Also show this class's probability map"
+    )
     args = parser.parse_args()
     device = torch.device(args.device) if args.device else pick_device()
     model = load_model(args.weight, device)

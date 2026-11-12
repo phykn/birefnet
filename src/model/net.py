@@ -21,9 +21,7 @@ class BiRefNet(nn.Module):
         self.auxiliary = auxiliary
         channels = [channel * 2 for channel in channels]
         self.bb = build_large()
-        self.squeeze_module = nn.Sequential(
-            BasicDecBlk(sum(channels), channels[0])
-        )
+        self.squeeze_module = nn.Sequential(BasicDecBlk(sum(channels), channels[0]))
         self.decoder = Decoder(channels=channels, num_classes=num_classes)
         self.bb.requires_grad_(False)
         self.train()

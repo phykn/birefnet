@@ -7,7 +7,7 @@ MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
 
 
-def stretch_contrast(gray: np.ndarray) -> np.ndarray:
+def stretch_contrast(gray):
     x = gray.astype(np.float32)
     mean = float(x.mean())
     std = float(x.std())
@@ -29,16 +29,16 @@ class Fit:
     size: int
 
     @property
-    def region(self) -> tuple[slice, slice]:
+    def region(self):
         return (
             slice(self.top, self.top + self.dst_h),
             slice(self.left, self.left + self.dst_w),
         )
 
-    def resize(self, image: np.ndarray, interp: int) -> np.ndarray:
+    def resize(self, image, interp):
         return cv2.resize(image, (self.dst_w, self.dst_h), interpolation=interp)
 
-    def pad(self, image: np.ndarray, value=0) -> np.ndarray:
+    def pad(self, image, value=0):
         canvas = np.full(
             (self.size, self.size, *image.shape[2:]), value, dtype=image.dtype
         )
@@ -46,9 +46,7 @@ class Fit:
         return canvas
 
 
-def plan_fit(
-    height: int, width: int, size: int = 1024, scale: float | None = None
-) -> Fit:
+def plan_fit(height, width, size=1024, scale=None):
     if scale is None:
         scale = min(size / height, size / width)
     dst_h = min(size, max(1, int(round(height * scale))))
@@ -64,9 +62,7 @@ def plan_fit(
     )
 
 
-def fit_image(
-    gray: np.ndarray, size: int = 1024, fit: Fit | None = None
-) -> tuple[np.ndarray, Fit]:
+def fit_image(gray, size=1024, fit=None):
     fit = fit or plan_fit(*gray.shape, size=size)
     down = fit.dst_h < gray.shape[0] or fit.dst_w < gray.shape[1]
     interp = cv2.INTER_AREA if down else cv2.INTER_CUBIC
@@ -78,12 +74,12 @@ def fit_image(
     return np.transpose(fit.pad(x), (2, 0, 1)), fit
 
 
-def fit_mask(mask: np.ndarray, fit: Fit, padding=0) -> np.ndarray:
+def fit_mask(mask, fit, padding=0):
     resized = fit.resize(mask.astype(np.float32), cv2.INTER_NEAREST_EXACT)
     return fit.pad(resized.astype(np.int64), padding)
 
 
-def restore_logits(logits: np.ndarray, fit: Fit) -> np.ndarray:
+def restore_logits(logits, fit):
     cropped = logits[:, fit.region[0], fit.region[1]].transpose(1, 2, 0)
     if cropped.shape[:2] != (fit.src_h, fit.src_w):
         cropped = cv2.resize(

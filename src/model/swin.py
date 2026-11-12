@@ -40,7 +40,9 @@ class WindowAttention(nn.Module):
         )
         coords = torch.stack(grid).flatten(1)
         relative = coords[:, :, None] - coords[:, None, :] + window_size - 1
-        self.register_buffer("relative_position_index", relative[0] * span + relative[1])
+        self.register_buffer(
+            "relative_position_index", relative[0] * span + relative[1]
+        )
         self.qkv = nn.Linear(dim, dim * 3)
         self.proj = nn.Linear(dim, dim)
 
@@ -76,7 +78,9 @@ class SwinTransformerBlock(nn.Module):
         padded_h, padded_w = x.shape[1:3]
         if shift:
             x = torch.roll(x, (-shift, -shift), dims=(1, 2))
-        windows = self.attn(split_windows(x, size), mask.repeat(b, 1, 1) if shift else None)
+        windows = self.attn(
+            split_windows(x, size), mask.repeat(b, 1, 1) if shift else None
+        )
         x = merge_windows(windows, size, padded_h, padded_w)
         if shift:
             x = torch.roll(x, (shift, shift), dims=(1, 2))
@@ -119,7 +123,9 @@ class BasicLayer(nn.Module):
             regions[:, rows, cols] = index
         windows = split_windows(regions.to(x.device), size).squeeze(-1)
         diff = windows[:, None, :] - windows[:, :, None]
-        mask = torch.zeros_like(diff, dtype=x.dtype).masked_fill(diff != 0, float("-inf"))
+        mask = torch.zeros_like(diff, dtype=x.dtype).masked_fill(
+            diff != 0, float("-inf")
+        )
         for block in self.blocks:
             x = block(x, mask, height, width)
         return x

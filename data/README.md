@@ -1,34 +1,39 @@
 # NEU-Seg steel surface defects
 
-Hot-rolled steel strip images with three defect classes, from the
-[DHW-Master/NEU_Seg](https://github.com/DHW-Master/NEU_Seg) copy of NEU-Seg.
-The source repository states no license, so the image and mask folders are
-git-ignored; only this README is committed.
+The example dataset for this project. It contains hot-rolled steel strip images with three defect classes, taken from the [DHW-Master/NEU_Seg](https://github.com/DHW-Master/NEU_Seg) copy of NEU-Seg.
 
-```
+The source repository states no license, so the image and mask folders are git-ignored. Only this README is committed.
+
+## Layout
+
+```text
 data/
-├── train/image/  3630 x 200x200 JPEG (grayscale content, RGB files)
-├── train/mask/   3630 palette PNGs
-├── test/image/    840 x 200x200 JPEG
-└── test/mask/     840 palette PNGs
+├── train/image/   3630 JPEG, 200 × 200 (grayscale content, RGB files)
+├── train/mask/    3630 palette PNG
+├── test/image/     840 JPEG, 200 × 200
+└── test/mask/      840 palette PNG
 ```
 
-Images and masks pair by filename stem (`000201.jpg` ↔ `000201.png`).
-`config.yaml` trains on `data/train/` and splits off `valid_ratio` for
-validation; `data/test/` is held out.
+- Images and masks pair by filename stem, for example `000201.jpg` ↔ `000201.png`.
+- The default [`config.yaml`](../config.yaml) trains on `data/train/` and holds out `data.valid_ratio` (10%) of it for validation.
+- `data/test/` is never used in training. Score it with `scripts/04_evaluate.py`.
 
-Masks are palette (mode `P`) PNGs whose pixel values are class IDs:
+## Classes
 
-| ID | Meaning | Palette color |
-|---|---|---|
-| 0 | Background | Black |
-| 1 | Inclusion | White |
-| 2 | Patches | Blue |
-| 3 | Scratches | Red |
+Masks are palette (mode `P`) PNGs, and each pixel value is a class ID.
 
-Read masks with Pillow without RGB conversion to keep the class IDs.
-Background covers about 88% of training pixels.
+| ID | Class | Palette color | Share of training pixels |
+| --- | --- | --- | --- |
+| 0 | Background | Black | 87.9% |
+| 1 | Inclusion | White | 2.1% |
+| 2 | Patches | Blue | 7.4% |
+| 3 | Scratches | Red | 2.6% |
 
-To rebuild: clone the source repository, move `images/training`,
-`annotations/training`, `images/test` and `annotations/test` to the folders
-above, and save each mask as a palette PNG with the colors in the table.
+Read masks with Pillow and do not convert them to RGB, so the class IDs stay intact.
+
+## Rebuild
+
+1. Clone [DHW-Master/NEU_Seg](https://github.com/DHW-Master/NEU_Seg).
+2. Move `images/training` to `train/image/` and `annotations/training` to `train/mask/`.
+3. Move `images/test` to `test/image/` and `annotations/test` to `test/mask/`.
+4. Save each mask as a palette PNG with the colors in the table above.

@@ -79,20 +79,33 @@ def test_train_predict_evaluate(tmp_path, monkeypatch, capsys):
     matplotlib.use("Agg")
     monkeypatch.setattr("matplotlib.pyplot.show", lambda: None)
     run_script(
-        monkeypatch, "03_predict",
-        "--weight", str(copied),
-        "--image", str(data / "image/sample_01.png"),
-        "--mask", str(data / "mask/sample_01.png"),
-        "--tiles", "1", "2",
-        "--class-id", "1",
-        "--device", "cpu",
+        monkeypatch,
+        "03_predict",
+        "--weight",
+        str(copied),
+        "--image",
+        str(data / "image/sample_01.png"),
+        "--mask",
+        str(data / "mask/sample_01.png"),
+        "--tiles",
+        "1",
+        "2",
+        "--class-id",
+        "1",
+        "--device",
+        "cpu",
     )
     run_script(
-        monkeypatch, "04_evaluate",
-        "--weight", str(copied),
-        "--images", str(data / "image"),
-        "--masks", str(data / "mask"),
-        "--device", "cpu",
+        monkeypatch,
+        "04_evaluate",
+        "--weight",
+        str(copied),
+        "--images",
+        str(data / "image"),
+        "--masks",
+        str(data / "mask"),
+        "--device",
+        "cpu",
     )
     out = capsys.readouterr().out
     assert "pairs: 4" in out and "pixel_accuracy:" in out
@@ -175,5 +188,8 @@ def test_train_and_resume_paths_use_project_root(tmp_path, monkeypatch):
     target = run.train(runs="run", device=torch.device("cpu"))
     assert target.parent == root / "run"
     weights = target / "weights/last.train.pth"
-    assert run.train(resume=weights.relative_to(root), device=torch.device("cpu")) == target
+    assert (
+        run.train(resume=weights.relative_to(root), device=torch.device("cpu"))
+        == target
+    )
     assert torch.load(weights)["step"] == 1

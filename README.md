@@ -1,12 +1,25 @@
+<div align="center">
+
 # BiRefNet for SEM Segmentation
 
-Fine-tune BiRefNet to label multiple classes in scanning electron microscopy (SEM) images. The pipeline uses grayscale preprocessing and SEM-oriented augmentations for contrast, uneven illumination, blur, and noise. It freezes the Swin-L backbone and trains the squeeze module and decoder.
+**Fine-tune BiRefNet to segment multiple classes in scanning electron microscope images.**
 
-Train, preview predictions, and evaluate on CUDA, Apple Silicon (MPS), or CPU. The default training crop is 1024 × 1024. Prediction supports overlapping tiles for large images.
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/pytorch-2.10%2B-EE4C2C?logo=pytorch&logoColor=white)
+![Devices](https://img.shields.io/badge/device-CUDA%20%7C%20Apple%20MPS%20%7C%20CPU-555555)
+
+</div>
+
+## Highlights
+
+- Pretrained BiRefNet with a frozen Swin-L backbone. Only the squeeze module and decoder train.
+- Grayscale input and SEM-style augmentations: gamma, uneven illumination, blur, noise.
+- Learns from sparse brush labels and imperfect AI masks together.
+- Trains at 1024 × 1024 and predicts large images with overlapping tiles.
 
 ## Quick start
 
-Use Python 3.10+ and uv. The requirements include PyTorch 2.10+. [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```bash
 git clone https://github.com/phykn/birefnet.git
@@ -15,129 +28,48 @@ uv venv .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-Download the base checkpoint and place it at `weight/BiRefNet-general-epoch_244.pth`. [BiRefNet v1 checkpoint](https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.pth)
-
-Put your image and mask pairs in the following directories. Use matching filename stems and single-channel or palette masks with class IDs from `0` to `model.classes - 1`. Pixels with value `255` are ignored. The loader scales each 16-bit image to 8-bit using its own intensity range. [NEU-Seg setup and label IDs](data/README.md)
-
-```text
-data/train/image/0001.jpg
-data/train/mask/0001.png
-```
+Download the [BiRefNet v1 checkpoint](https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.pth) to `weight/`. Put image and mask pairs in `data/train/image/` and `data/train/mask/`. They pair by filename stem. Masks hold class IDs, and `255` marks ignored pixels. See [the example dataset](data/README.md).
 
 ```bash
-.venv/bin/python scripts/01_dataset.py   # preview image and mask pairs
-.venv/bin/python scripts/02_augment.py   # preview training augmentations
+.venv/bin/python scripts/01_dataset.py   # preview data
+.venv/bin/python scripts/02_augment.py   # preview augmentations
 .venv/bin/python run_train.py
 ```
 
-## Configure and resume training
+## Training
 
-Edit `config.yaml`, or pass `--config path/to/overrides.yaml` with just the settings you want to override. `train.crop` accepts multiples of 32 from 64 to 1024. Prediction uses a 1024 × 1024 model input and restores the result to the original image size. [Default settings](config.yaml)
-
-Relative config, dataset, base-weight, and training-run paths resolve from the project root, even when launched from another directory.
-
-Each run saves its resolved config, training and validation split, TensorBoard logs, and checkpoints under `run/RUN_ID/`. Replace `RUN_ID` with your run directory name in the commands below.
+Defaults live in [`config.yaml`](config.yaml). Override only what you need:
 
 ```bash
-.venv/bin/tensorboard --logdir run
+.venv/bin/python run_train.py --config my_overrides.yaml
 .venv/bin/python run_train.py --resume run/RUN_ID/weights/last.train.pth
+.venv/bin/tensorboard --logdir run
 ```
 
-`best_miou.pth` holds the EMA weights with the best validation mIoU. Use `last.train.pth` to resume training.
+Each run saves its config, data split, logs, and checkpoints to `run/RUN_ID/`. Use `best_miou.pth` for prediction and `last.train.pth` to resume.
 
 ## Predict and evaluate
 
 ```bash
-.venv/bin/python scripts/03_predict.py \
-  --weight run/RUN_ID/weights/best_miou.pth \
-  --image data/test/image/0001.jpg --tiles 1 3
-
-.venv/bin/python scripts/04_evaluate.py \
-  --weight run/RUN_ID/weights/best_miou.pth \
+.venv/bin/python scripts/03_predict.py --weight run/RUN_ID/weights/best_miou.pth \
+  --image data/test/image/000001.jpg --tiles 1 3
+.venv/bin/python scripts/04_evaluate.py --weight run/RUN_ID/weights/best_miou.pth \
   --images data/test/image --masks data/test/mask
 ```
 
-Use a filename from your dataset in the prediction command. The preview shows the predicted class map and overlay. Add `--mask PATH` to compare a ground-truth mask or `--class-id 1` to see a class probability map. Evaluation reports mean IoU, per-class IoU, and pixel accuracy. Both commands accept `--device cpu` to select the CPU explicitly.
+`--tiles 1 3` averages the whole image with a 3 × 3 tile grid. Evaluation reports mIoU, per-class IoU, and pixel accuracy.
 
-## Train with brush labels and AI masks
+## Brush labels and AI masks
 
-Use this mode when people painted only small parts of each image and an AI filled in a full mask from those strokes. Training trusts the painted pixels strongly and the AI mask weakly, and treats both as possibly wrong. Every image needs all three files, matched by filename stem. Both `mask/` and `label/` hold class IDs; `255` in `label/` means unpainted.
+If people painted a few strokes and an AI filled in the rest, add a label folder. Painted pixels are trusted, and the AI mask is a weaker target.
 
 ```text
 DATA/image/0001.png
-DATA/mask/0001.png    # AI mask, every pixel filled
+DATA/mask/0001.png    # AI mask
 DATA/label/0001.png   # brush strokes, 255 elsewhere
 ```
 
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `data.label_dir` | `""` | Folder of brush labels. Empty turns this mode off. |
-| `loss.label_weight` | `1.0` | Weight of cross-entropy on painted pixels, averaged over painted pixels only |
-| `loss.mask_weight` | `3.0` | Weight of cross-entropy and Dice on the AI mask, away from painted pixels |
-| `loss.label_smooth` | `0.05` | Label smoothing on painted pixels, so one wrong stroke cannot force full confidence |
-
-The defaults scored best against the true answer on synthetic data: `mask_weight: 3.0` beat 0.3 and 1.0. The label term is averaged over painted pixels only, so each painted pixel still counts for far more than each mask pixel. If your AI masks are less accurate than the synthetic ones, raise the error rates in `scripts/00_synthetic.py` and compare weights again. That comparison predates the current GCE, EMA teacher, and class-head learning-rate defaults, so rerun it before relying on `mask_weight: 3.0`.
-
-Validation then reports `label_miou` on painted pixels and `mask_miou` against the AI mask; `best_miou.pth` is chosen by `label_miou`. Painted pixels usually sit where the AI mask is already right, so `label_miou` checks that trusted pixels are kept, not how well mask errors were fixed.
-
-### Choose settings on synthetic data
-
-Synthetic samples come with the true answer in `truth/`, so they can show which settings fix mask errors. The error rates and sizes are constants at the top of `scripts/00_synthetic.py`; adjust them to resemble your real AI masks and strokes.
-
-```bash
-.venv/bin/python scripts/00_synthetic.py   # data/synthetic/{train,test}/{image,mask,label,truth}
-.venv/bin/python scripts/02_augment.py --config experiments/syn_trial.yaml
-.venv/bin/python run_train.py --config experiments/syn_trial.yaml
-```
-
-`experiments/syn_trial.yaml` is a local 20-step config with `model.classes: 5`, the three `data/synthetic/train` folders, and `train.warmup: 0`. Score a run three ways by changing `--masks`:
-
-```bash
-for target in truth label mask; do
-  .venv/bin/python scripts/04_evaluate.py \
-    --weight run/RUN_ID/weights/best_miou.pth \
-    --images data/synthetic/test/image --masks data/synthetic/test/$target
-done
-```
-
-### Train on your own data
-
-Create two override configs with your folders and class count. Train both with the same number of steps, then compare the best `valid/label_miou` in TensorBoard. The labeled run should not score lower than the mask-only run.
-
-```yaml
-# labeled.yaml
-model:
-  classes: 5
-data:
-  image_dir: DATA/image
-  mask_dir: DATA/mask
-  label_dir: DATA/label
-loss:
-  mask_weight: 3.0
-```
-
-```yaml
-# mask_only.yaml: same data, learns from the AI mask alone
-model:
-  classes: 5
-data:
-  image_dir: DATA/image
-  mask_dir: DATA/mask
-  label_dir: DATA/label
-loss:
-  label_weight: 0.0
-  mask_weight: 1.0
-  teacher: 0.0
-```
-
-## Optional training features
-
-The default recipe uses EMA weights, Dice loss, and BiRefNet's edge-guidance loss (`loss.aux: 1.0`), which trains the decoder's edge branch on image edges that lie on predicted class boundaries. On the AI mask it uses generalized cross-entropy (`loss.gce_q: 0.7`; `0` is plain cross-entropy), which pulls less on pixels the model confidently disagrees with. From `loss.teacher_start` the mask target also leans toward the EMA model's prediction (`loss.teacher: 0.3`). Painted labels always use plain cross-entropy. The four class heads are new layers, so they train at `train.head_lr_scale: 10.0` times `train.lr`; the rest of the pretrained decoder keeps `train.lr`. The following features are off by default. To try one, set its key to the example value in your config.
-
-| Feature | Config key | Example value |
-| --- | --- | --- |
-| Boundary-band loss | `loss.boundary` | `0.5` |
-| Label blur | `loss.label_blur` | `1.0` |
+Set `data.label_dir` to that folder. `scripts/00_synthetic.py` makes synthetic data with known ground truth for tuning `loss.label_weight` and `loss.mask_weight`.
 
 ## Tests
 
@@ -145,8 +77,8 @@ The default recipe uses EMA weights, Dice loss, and BiRefNet's edge-guidance los
 .venv/bin/python -m pytest -q
 ```
 
-Tests skip hardware and model checks when the required GPU or checkpoints are unavailable.
+## References
 
-## Code layout
-
-`src/run.py` assembles training from the schema in `src/config.py`. Data pairing, splitting, augmentation, and model-input fitting live in `src/data/`. `src/model/` preserves the pretrained architecture and checkpoint keys. `src/train/` owns losses, EMA, optimizer steps, and training checkpoints. Both validation and the evaluation CLI use `src/evaluate.py`, which calls the whole-image and tiled inference in `src/predict.py`.
+1. P. Zheng, D. Gao, D.-P. Fan, L. Liu, J. Laaksonen, W. Ouyang, and N. Sebe, "Bilateral Reference for High-Resolution Dichotomous Image Segmentation," *CAAI Artificial Intelligence Research*, 2024. [[code]](https://github.com/ZhengPeng7/BiRefNet)
+2. Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin, and B. Guo, "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows," in *Proc. IEEE/CVF ICCV*, 2021. [[code]](https://github.com/microsoft/Swin-Transformer)
+3. H. Dong, K. Song, Y. He, J. Xu, Y. Yan, and Q. Meng, "PGA-Net: Pyramid Feature Fusion and Global Context Attention Network for Automated Surface Defect Detection," *IEEE Trans. Industrial Informatics*, 2020. (NEU-Seg dataset) [[data]](https://github.com/DHW-Master/NEU_Seg)

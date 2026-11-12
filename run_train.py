@@ -3,7 +3,7 @@ import argparse
 from src.run import train
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser()
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--resume")

@@ -57,4 +57,3 @@ def test_resume_continues_the_same_curve():
     _advance(opt, sched)
     _advance(restored_opt, restored)
     assert restored.get_last_lr() == sched.get_last_lr() == [_lr(restored_opt)]
-

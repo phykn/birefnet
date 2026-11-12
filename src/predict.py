@@ -1,5 +1,4 @@
 import math
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,7 +20,7 @@ class Tile:
     overlap_right: int = 0
 
 
-def plan_axis(length: int, count: int, overlap: float) -> list[tuple[int, ...]]:
+def plan_axis(length, count, overlap):
     if count == 1:
         return [(0, length, 0, 0)]
     extent = math.ceil(length / (count - (count - 1) * overlap))
@@ -39,7 +38,7 @@ def plan_axis(length: int, count: int, overlap: float) -> list[tuple[int, ...]]:
     return planned
 
 
-def plan_tiles(height: int, width: int, grid: int, overlap: float) -> list[Tile]:
+def plan_tiles(height, width, grid, overlap):
     return [
         Tile(top, left, bottom, right, before_y, before_x, after_y, after_x)
         for top, bottom, before_y, after_y in plan_axis(height, grid, overlap)
@@ -47,7 +46,7 @@ def plan_tiles(height: int, width: int, grid: int, overlap: float) -> list[Tile]
     ]
 
 
-def weigh_axis(length: int, before: int, after: int) -> np.ndarray:
+def weigh_axis(length, before, after):
     weight = np.ones(length, dtype=np.float32)
     for count, view in ((before, weight), (after, weight[::-1])):
         if count:
@@ -56,13 +55,13 @@ def weigh_axis(length: int, before: int, after: int) -> np.ndarray:
     return weight
 
 
-def weigh_tile(tile: Tile) -> np.ndarray:
+def weigh_tile(tile):
     wy = weigh_axis(tile.bottom - tile.top, tile.overlap_top, tile.overlap_bottom)
     wx = weigh_axis(tile.right - tile.left, tile.overlap_left, tile.overlap_right)
     return wy[:, None] * wx[None, :]
 
 
-def infer(model, tensors: list[np.ndarray], device: torch.device) -> np.ndarray:
+def infer(model, tensors, device):
     batch = torch.from_numpy(np.stack(tensors)).to(device)
     with autocast(device, pick_amp_dtype(device)):
         logits = model(batch).logits[-1]
@@ -91,14 +90,14 @@ def predict_tiles(model, image, grid, size, overlap, batch_size, device):
 
 @torch.inference_mode()
 def predict(
-    model: torch.nn.Module,
-    image: np.ndarray,
+    model,
+    image,
     *,
-    size: int = 1024,
-    tiles: Sequence[int] = (1,),
-    overlap: float = 1 / 3,
-    tile_batch: int = 2,
-) -> dict[str, np.ndarray]:
+    size=1024,
+    tiles=(1,),
+    overlap=1 / 3,
+    tile_batch=2,
+):
     if not tiles or min(tiles) <= 0:
         raise ValueError("tiles must contain positive integers")
     if tile_batch <= 0:
