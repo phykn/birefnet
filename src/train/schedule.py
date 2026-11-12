@@ -1,16 +1,13 @@
 import math
 
-import torch
 from torch.optim.lr_scheduler import LambdaLR
 
 
-def cosine_schedule(
-    optimizer: torch.optim.Optimizer, steps: int, min_lr: float, warmup: int = 0
-) -> LambdaLR:
-    def factor(peak: float):
+def cosine_schedule(optimizer, steps, min_lr, warmup=0):
+    def factor(peak):
         floor = min_lr / peak
 
-        def at(step: int) -> float:
+        def at(step):
             if step < warmup:
                 return floor + (1 - floor) * step / warmup
             progress = (step - warmup) / (steps - warmup)

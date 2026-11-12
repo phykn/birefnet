@@ -73,6 +73,7 @@ class Train:
     val_every: int
     save_every: int
     lr: float
+    head_lr_scale: float
     min_lr: float
     warmup: int
     weight_decay: float
@@ -85,6 +86,7 @@ class Train:
 @dataclass
 class Loss:
     ce: float
+    gce_q: float
     dice: float
     boundary: float
     boundary_width: int
@@ -154,6 +156,7 @@ def parse_config(values, ignore_unknown=False):
         "train.val_every": t.val_every >= 1,
         "train.save_every": t.save_every >= 1,
         "train.lr": t.lr > 0,
+        "train.head_lr_scale": t.head_lr_scale >= 1,
         "train.min_lr": 0 <= t.min_lr <= t.lr,
         "train.warmup": 0 <= t.warmup < t.steps,
         "train.weight_decay": t.weight_decay >= 0,
@@ -168,6 +171,7 @@ def parse_config(values, ignore_unknown=False):
         "loss.teacher": 0 <= cfg.loss.teacher < 1,
         "loss.teacher_start": cfg.loss.teacher_start >= 1,
         "loss.ce": cfg.loss.ce >= 0,
+        "loss.gce_q": 0 <= cfg.loss.gce_q <= 1,
         "loss.dice": cfg.loss.dice >= 0 and cfg.loss.ce + cfg.loss.dice > 0,
         "loss.label_weight": cfg.loss.label_weight >= 0,
         "loss.mask_weight": cfg.loss.mask_weight >= 0

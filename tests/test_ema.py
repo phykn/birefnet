@@ -18,7 +18,7 @@ def test_ema_averages_trainable_weights_only():
     assert set(ema.params) == {"weight"}
     with torch.no_grad():
         model.weight.fill_(3)
-    ema.update()
+    ema.update(10**6)
     assert ema.params["weight"] == 2
     with ema.applied():
         assert model.weight == 2
@@ -30,13 +30,13 @@ def test_ema_resume_matches_uninterrupted_updates():
     ema = EMA(model, decay=0.5)
     with torch.no_grad():
         model.weight.fill_(3)
-    ema.update()
+    ema.update(10**6)
     restored = EMA(model, decay=ema.decay)
     restored.load_state_dict(ema.state_dict())
     with torch.no_grad():
         model.weight.fill_(5)
-    ema.update()
-    restored.update()
+    ema.update(10**6)
+    restored.update(10**6)
     torch.testing.assert_close(restored.params["weight"], ema.params["weight"])
 
 
@@ -44,3 +44,12 @@ def test_ema_rejects_mismatched_state():
     ema = EMA(Model(), decay=0.5)
     with pytest.raises(RuntimeError):
         ema.load_state_dict({"weight": torch.zeros(2)})
+
+
+def test_ema_follows_live_weights_early():
+    model = Model()
+    ema = EMA(model, decay=0.999)
+    with torch.no_grad():
+        model.weight.fill_(11)
+    ema.update(0)
+    assert ema.params["weight"] == 10

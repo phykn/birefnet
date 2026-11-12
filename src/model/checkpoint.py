@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import torch
 from torch import nn
 
@@ -63,6 +65,14 @@ def load_trained(model: nn.Module, state: dict[str, torch.Tensor]) -> None:
             f"Checkpoint trained keys differ: {sorted(set(state) ^ expected)[:10]}"
         )
     model.load_state_dict(state, strict=False)
+
+
+def write_checkpoint(state, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    torch.save(state, tmp)
+    tmp.replace(path)
 
 
 def read_checkpoint(path):

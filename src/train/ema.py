@@ -10,9 +10,10 @@ class EMA:
         self.params = {n: p.detach().clone() for n, p in self.live.items()}
 
     @torch.no_grad()
-    def update(self):
+    def update(self, step):
+        decay = min(self.decay, (1 + step) / (10 + step))
         for name, avg in self.params.items():
-            avg.lerp_(self.live[name], 1 - self.decay)
+            avg.lerp_(self.live[name], 1 - decay)
 
     @contextmanager
     def applied(self):

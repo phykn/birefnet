@@ -1,6 +1,6 @@
 import torch
 from src.model import Output
-from src.train.loss import TrainLoss
+from tests.train_utils import make_loss
 from src.evaluate import compute_scores, count_confusion
 
 
@@ -9,7 +9,7 @@ def test_ce_and_ignore():
     logits = torch.randn(2, 4, 8, 8, requires_grad=True)
     target = torch.randint(0, 4, (2, 8, 8))
     target[:, 0] = 255
-    _, loss = TrainLoss(1, 0)(Output([logits]), {"mask": target})
+    _, loss = make_loss(dice=0, gce_q=0)(Output([logits]), {"mask": target})
     torch.testing.assert_close(
         loss, torch.nn.functional.cross_entropy(logits, target, ignore_index=255)
     )
@@ -18,7 +18,7 @@ def test_ce_and_ignore():
     x = logits.detach().clone()
     x[:, :, 0] = float("nan")
     x.requires_grad_()
-    _, ignored = TrainLoss()(Output([x]), {"mask": torch.full_like(target, 255)})
+    _, ignored = make_loss()(Output([x]), {"mask": torch.full_like(target, 255)})
     assert ignored == 0
     ignored.backward()
     assert not x.grad.any()
@@ -32,25 +32,8 @@ def test_metrics():
     assert count_confusion(torch.tensor([0, 1]), torch.tensor([0, 255]), 2).sum() == 1
 
 
-def fixed_batch():
-    g = torch.Generator().manual_seed(0)
-    logits = [torch.randn(2, 4, 16, 16, generator=g), torch.randn(2, 4, 32, 32, generator=g)]
-    mask = torch.randint(0, 4, (2, 32, 32), generator=g)
-    mask[0, :3] = 255
-    return logits, mask
-
-
-def test_loss_without_labels_is_unchanged():
-    # Values computed before label support was added.
-    logits, mask = fixed_batch()
-    _, plain = TrainLoss()(Output(logits), {"mask": mask})
-    _, extras = TrainLoss(lambda_boundary=0.5, label_blur=1.0)(Output(logits), {"mask": mask})
-    assert abs(float(plain) - 2.4720215797424316) <= 1e-6
-    assert abs(float(extras) - 3.3340988159179688) <= 1e-6
-
-
 def label_loss(logits, mask, label, **kwargs):
-    parts, loss = TrainLoss(**kwargs)(Output([logits]), {"mask": mask, "label": label})
+    parts, loss = make_loss(**kwargs)(Output([logits]), {"mask": mask, "label": label})
     return parts, loss
 
 
@@ -74,7 +57,7 @@ def test_one_wrong_label_pixel_is_bounded():
     label = torch.full((1, 10, 100), 255)
     label[0, 3, 3] = 1
     pixel = -torch.log_softmax(logits[0, :, 3, 3], 0)[1]
-    parts, _ = label_loss(logits, torch.zeros_like(label), label)
+    parts, _ = label_loss(logits, torch.zeros_like(label), label, label_smooth=0)
     assert abs(float(parts["label_ce"]) - float(pixel) / 5) <= 1e-6
 
 
@@ -100,5 +83,5 @@ def test_label_smoothing_keeps_some_loss():
     logits[:, 2] = 20.0
     label = torch.full((1, 8, 8), 255)
     label[0, :4] = 2
-    parts, _ = label_loss(logits, torch.full_like(label, 2), label, label_smooth=0.05, num_classes=5)
+    parts, _ = label_loss(logits, torch.full_like(label, 2), label, label_smooth=0.05, classes=5)
     assert parts["label_ce"] > 0

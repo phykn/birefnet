@@ -76,7 +76,7 @@ DATA/label/0001.png   # brush strokes, 255 elsewhere
 | `loss.mask_weight` | `3.0` | Weight of cross-entropy and Dice on the AI mask, away from painted pixels |
 | `loss.label_smooth` | `0.05` | Label smoothing on painted pixels, so one wrong stroke cannot force full confidence |
 
-The defaults scored best against the true answer on synthetic data: `mask_weight: 3.0` beat 0.3 and 1.0. The label term is averaged over painted pixels only, so each painted pixel still counts for far more than each mask pixel. If your AI masks are less accurate than the synthetic ones, raise the error rates in `scripts/00_synthetic.py` and compare weights again.
+The defaults scored best against the true answer on synthetic data: `mask_weight: 3.0` beat 0.3 and 1.0. The label term is averaged over painted pixels only, so each painted pixel still counts for far more than each mask pixel. If your AI masks are less accurate than the synthetic ones, raise the error rates in `scripts/00_synthetic.py` and compare weights again. That comparison predates the current GCE, EMA teacher, and class-head learning-rate defaults, so rerun it before relying on `mask_weight: 3.0`.
 
 Validation then reports `label_miou` on painted pixels and `mask_miou` against the AI mask; `best_miou.pth` is chosen by `label_miou`. Painted pixels usually sit where the AI mask is already right, so `label_miou` checks that trusted pixels are kept, not how well mask errors were fixed.
 
@@ -132,7 +132,7 @@ loss:
 
 ## Optional training features
 
-The default recipe uses cross-entropy, Dice loss, and EMA weights. The following features are off by default. To try one, set its key to the example value in your config.
+The default recipe uses EMA weights and Dice loss. On the AI mask it uses generalized cross-entropy (`loss.gce_q: 0.7`; `0` is plain cross-entropy), which pulls less on pixels the model confidently disagrees with. From `loss.teacher_start` the mask target also leans toward the EMA model's prediction (`loss.teacher: 0.3`). Painted labels always use plain cross-entropy. The four class heads are new layers, so they train at `train.head_lr_scale: 10.0` times `train.lr`; the rest of the pretrained decoder keeps `train.lr`. The following features are off by default. To try one, set its key to the example value in your config.
 
 | Feature | Config key | Example value |
 | --- | --- | --- |
@@ -140,7 +140,6 @@ The default recipe uses cross-entropy, Dice loss, and EMA weights. The following
 | Boundary-band loss | `loss.boundary` | `0.5` |
 | Edge-guidance loss | `loss.aux` | `1.0` |
 | Label blur | `loss.label_blur` | `1.0` |
-| EMA teacher | `loss.teacher` | `0.3` |
 
 For depth input, place the model files in the directory specified by `model.depth_weight`. The default is `weight/Depth-Anything-V2-Small-hf`. [Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf)
 

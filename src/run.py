@@ -7,7 +7,7 @@ from .data.io import pair_files
 from .data.dataset import MaskDataset
 from .data import split
 from .device import pick_device
-from .model.checkpoint import build
+from .model.checkpoint import SEGMENTATION_HEADS, build
 from .train.loss import TrainLoss
 from .train.schedule import cosine_schedule
 from .train.trainer import Trainer
@@ -49,8 +49,18 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
     model = build(cfg).to(device)
     if device.type == "mps":
         model.bb.compile(dynamic=False)
+    heads, rest = [], []
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            is_head = name.rsplit(".", 1)[0] in SEGMENTATION_HEADS
+            (heads if is_head else rest).append(param)
     optimizer = torch.optim.AdamW(
-        model.list_trainable(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay
+        [
+            {"params": rest},
+            {"params": heads, "lr": cfg.train.lr * cfg.train.head_lr_scale},
+        ],
+        lr=cfg.train.lr,
+        weight_decay=cfg.train.weight_decay,
     )
     scheduler = cosine_schedule(
         optimizer, cfg.train.steps, cfg.train.min_lr, cfg.train.warmup
@@ -66,30 +76,19 @@ def train(resume=None, config=None, runs=ROOT / "run", device=None):
         model,
         loader,
         splits["valid"],
-        TrainLoss(
-            lambda_cls=cfg.loss.ce,
-            lambda_region=cfg.loss.dice,
-            lambda_boundary=cfg.loss.boundary,
-            boundary_radius=cfg.loss.boundary_width,
-            lambda_aux=cfg.loss.aux,
-            num_classes=cfg.model.classes,
-            label_blur=cfg.loss.label_blur,
-            label_weight=cfg.loss.label_weight,
-            mask_weight=cfg.loss.mask_weight,
-            label_smooth=cfg.loss.label_smooth,
-        ),
+        TrainLoss(cfg),
         optimizer,
         scheduler,
         run_dir,
         cfg,
     )
     if resume is not None:
-        trainer.load_resume(resume)
+        trainer.resume(resume)
     stats = model.stats
     print(
         f"train={len(splits['train'])}, valid={len(splits['valid'])}, "
         f"trainable={stats['trainable'] / stats['total']:.2%}"
     )
-    trainer.train(cfg.train.steps, cfg.train.val_every, cfg.train.save_every)
+    trainer.train()
     print(f"Training finished: {run_dir}")
     return run_dir

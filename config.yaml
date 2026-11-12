@@ -36,6 +36,7 @@ train:
   val_every: 250
   save_every: 500
   lr: 0.0001
+  head_lr_scale: 10.0
   min_lr: 1.0e-06
   warmup: 200
   weight_decay: 0.01
@@ -46,12 +47,13 @@ train:
 
 loss:
   ce: 1.0
+  gce_q: 0.7
   dice: 1.0
   boundary: 0.0
   boundary_width: 3
   aux: 0.0
   label_blur: 0.0
-  teacher: 0.0
+  teacher: 0.3
   teacher_start: 1000
   label_weight: 1.0
   mask_weight: 3.0

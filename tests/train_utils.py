@@ -7,6 +7,14 @@ from src.train.schedule import cosine_schedule
 from src.train.trainer import Trainer
 
 
+def make_loss(classes=4, **loss):
+    cfg = load_config()
+    cfg.model.classes = classes
+    for key, value in loss.items():
+        setattr(cfg.loss, key, value)
+    return TrainLoss(cfg)
+
+
 class Tiny(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -39,5 +47,5 @@ def trainer(tmp_path, model=None):
             "mask": torch.zeros(1, 16, 16, dtype=torch.long),
         }
     ]
-    return Trainer(m, batches, [], TrainLoss(), opt, sch, tmp_path, cfg)
+    return Trainer(m, batches, [], TrainLoss(cfg), opt, sch, tmp_path, cfg)
 
